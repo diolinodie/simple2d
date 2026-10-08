@@ -104,7 +104,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
 <details>
   <summary>引擎結構說明</summary>
   <ul class="doc">
-    <li><strong>物理</strong>：Matter.js。每個角色是 14 個剛體（頭、軀幹、上臂×2、前臂×2、手×2、大腿×2、小腿×2、腳×2）用長度 0 的關節 constraint 接起來的布娃娃；同一人的部件彼此不碰撞，和對手、地面才碰撞。</li>
+    <li><strong>物理</strong>：Matter.js。每個角色是 14 個剛體（頭、軀幹、上臂×2、前臂×2、手×2、大腿×2、小腿×2、腳×2）用長度 0 的關節 constraint 接起來的布娃娃；同一人的部件彼此不碰撞，和對手的每個部件、地面都會碰撞。每影格跑 4 個物理子步，薄的手掌和前臂才不會一步就穿過對方的手。</li>
     <li><strong>站立與重力</strong>：至少一腳踩在地上、而且軀幹掉到站姿高度以下時，腿才會往上頂住（抵銷重力的支撐力 + 彈簧 + 阻尼），再加扶正扭矩；雙腳一離地（或被打飛到站姿高度以上）就沒有任何支撐，純粹受重力落下。手腳的拖曳目標被限制在肩、髖可及的範圍內，腰只能蹲、頭只能低，所以拖曳不會把自己吊起來。</li>
     <li><strong>操作</strong>：手指抓住節點時，建立一條「手指 → 剛體」的彈性 constraint，CPU 也是用同一套 API 下指令。節點被衝擊推離手指太遠就自動脫手，必須重抓。</li>
     <li><strong>命中</strong>：碰撞開始事件裡，只有「手或腳」打到「對方的頭或身體」且沿法線的相對速度夠快才扣血；慢慢推不算。對方的拳頭先碰到你的前臂就打不到頭，這就是格擋，但手臂會被推歪。</li>
@@ -136,12 +136,13 @@ function cssColor(name, fb) {
 /* ---------- 常數 ---------- */
 const W = 800, H = 400, GROUND = 360;        // 舞台世界座標
 const S = 0.8;                               // 角色相對原版 BOT-01 的縮放
-const STEP = 1 / 60, DT2 = (1000 / 60) ** 2; // 固定步長；Matter 的 torque 公式會乘 delta²
+const STEP = 1 / 60, DT2 = (1000 / 60) ** 2; // 固定步長；force / torque 的換算以 1/60 秒為基準，和子步大小無關
+const SUB = 4, SDT = 1000 / 60 / SUB;        // 每影格跑 4 個物理子步：薄的部位（手掌、前臂）一子步最多移動 3，才擋得住對方的手
 const REACH = 135;                           // 兩個軀幹中心相距多少時手剛好打得到
-const HIT_MIN = 3;                           // 相對速度（px/步）低於這個只算推擠不扣血
+const HIT_MIN = 3.5;                         // 相對速度（px/步）低於這個只算推擠不扣血
 const MAX_V = 12, MAX_AV = 0.3;              // 速度上限，避免拳頭穿過薄薄的前臂，也讓整體動作慢一點
 const BREAK = { head: 80, torso: 110, handL: 90, handR: 90, footL: 90, footR: 90 }; // 手指和節點差多遠就脫手
-const GRAB_STIFF = { head: 0.1, torso: 0.08 };                                      // 其他節點 0.22
+const GRAB_STIFF = { head: 0.035, torso: 0.03 };                                    // 其他節點 0.08（每個子步各拉一次，等於每影格約 0.28）
 const PAD_WORLD_W = 320, PAD_WORLD_H = 270, PAD_BOTTOM = 26;
 const C = { body: '#d6dde6', bodyDark: '#aab6c4', joint: '#3b4756', visor: '#202a36', eye: '#6ef2d8', pupil: '#0f2a2a', hand: '#8b97a6' };
 const TEAM = { p1: { name: 'P1', accent: '#e8890c' }, cpu: { name: 'CPU', accent: '#3b82f6' } };
@@ -150,7 +151,7 @@ const LABELS = { head: '頭', torso: '腰', handL: '左手', handR: '右手', fo
 const NODE_SIZE = { head: [60, 52], torso: [72, 64], handL: [48, 48], handR: [48, 48], footL: [50, 44], footR: [50, 44] };
 const DIFFS = {
   easy:   { interval: 2.2,  swing: 0.34, guard: 0.4,  speed: 45, react: 0.7 },
-  normal: { interval: 1.4,  swing: 0.22, guard: 0.7,  speed: 65, react: 0.4 },
+  normal: { interval: 1.6,  swing: 0.22, guard: 0.7,  speed: 65, react: 0.4 },
   hard:   { interval: 0.8,  swing: 0.15, guard: 0.95, speed: 90, react: 0.2 },
 };
 
@@ -219,17 +220,16 @@ function clampAnchorX(f, x) {
   return clamp(x, Math.min(lo, hi), Math.max(lo, hi));
 }
 // Body.update 裡 angularVelocity += torque / inertia * delta²，所以反推出要的扭矩
-function upright(b, kp, kd) { b.torque = -(kp * wrap(b.angle) + kd * b.angularVelocity) * b.inertia / DT2; }
+function upright(b, kp, kd) { b.torque = -(kp * wrap(b.angle) + kd * Body.getAngularVelocity(b)) * b.inertia / DT2; }
 // 腳踩地的程度：任一腳底離地 0 → 1，離地 18 以上 → 0
 function footContact(f) {
   let c = 0;
   for (const p of ['footL', 'footR']) c = Math.max(c, clamp(1 - (GROUND - f.B[p].bounds.max.y) / 18, 0, 1));
   return c;
 }
-function balance(f, dt) {
+function balance(f) {
   if (f.ko) return;
-  const t = f.B.torso, p = t.position, v = t.velocity;
-  f.anchor.x = clampAnchorX(f, lerp(f.anchor.x, p.x, Math.min(1, 2.5 * dt)));
+  const t = f.B.torso, p = t.position, v = Body.getVelocity(t);
   // 腿的支撐：要有腳踩在地上，而且軀幹在站姿高度以下，腿才往上頂（抵銷重力 + 彈簧 + 阻尼），同時把身體拉回錨點 x。
   // 雙腳離地或被打飛到站姿高度以上就沒有任何支撐，純粹受重力落下。force 會在 Body.update 裡換成 force / mass * delta²。
   const dy = p.y - f.standY, c = footContact(f);
@@ -250,7 +250,7 @@ function grab(f, part, pt, owner) {
   if (grabs.has(key) || f.ko) return null;
   const body = f.B[part];
   const c = Constraint.create({ pointA: { x: body.position.x, y: body.position.y }, bodyB: body, pointB: { x: 0, y: 0 },
-    length: 0, stiffness: GRAB_STIFF[part] || 0.22, damping: 0.08 });
+    length: 0, stiffness: GRAB_STIFF[part] || 0.08, damping: 0.05 });
   Composite.add(world, c);
   const g = { key, f, part, body, c, owner, off: { x: pt.x - body.position.x, y: pt.y - body.position.y },
     target: { x: body.position.x, y: body.position.y }, strain: 0, over: 0, lost: false };
@@ -304,14 +304,15 @@ function checkHit(a, b, pair) {
   if (!striker || !victim || victim.ko || striker.ko) return;
   if ((striker.cool[la[1]] || 0) > game.time) return;
   const n = pair.collision.normal;
-  const rvx = a.velocity.x - b.velocity.x, rvy = a.velocity.y - b.velocity.y;
+  const va = Body.getVelocity(a), vb = Body.getVelocity(b);
+  const rvx = va.x - vb.x, rvy = va.y - vb.y;
   const v = Math.abs(rvx * n.x + rvy * n.y);
   if (v < HIT_MIN) return;
   striker.cool[la[1]] = game.time + 0.3;
-  let dmg = (v - HIT_MIN) * 2.0;
+  let dmg = (v - HIT_MIN) * 1.3;
   if (lb[1] === 'head') dmg *= 1.4;
   if (la[1].startsWith('foot')) dmg *= 1.2;
-  dmg = clamp(Math.round(dmg), 1, 18);
+  dmg = clamp(Math.round(dmg), 1, 14);
   applyHit(victim, lb[1], dmg, b.position, striker);
 }
 function applyHit(victim, zone, dmg, at, striker) {
@@ -349,6 +350,17 @@ class Brain {
     const me = this.me, foe = this.foe, D = this.D;
     if (me.ko || foe.ko) return;
     const dx = foe.B.torso.position.x - me.B.torso.position.x, dist = Math.abs(dx), dir = Math.sign(dx) || me.facing;
+    // 倒地（軀幹太低而且雙腳離地）：先把雙腳拉回地面，腿的支撐力才會把身體撐起來
+    const tp = me.B.torso.position;
+    if (tp.y > me.standY + 25 && footContact(me) < 0.5) {
+      if (this.state !== 'getup') { this.endAttack(); this.state = 'getup'; const g = grabs.get(me.id + ':head'); if (g) release(g); }
+      for (const part of ['footL', 'footR']) { const g = this.wantGrab(part); if (g) setTarget(g, { x: tp.x + (part === 'footL' ? -20 : 20), y: GROUND - 5 }); }
+      return;
+    }
+    if (this.state === 'getup') {
+      for (const part of ['footL', 'footR']) { const g = grabs.get(me.id + ':' + part); if (g && g.owner === 'cpu') release(g); }
+      this.state = 'guard'; this.next = Math.max(this.next, 0.5);
+    }
     let move = 0;
     if (this.state === 'retreat') move = -dir; else if (dist > REACH + 25) move = dir; else if (dist < REACH - 35) move = -dir;
     if (move) me.anchor.x = clampAnchorX(me, me.anchor.x + move * D.speed * dt);
@@ -396,7 +408,8 @@ class Brain {
     if (!a || grabs.get(a.g.key) !== a.g) { this.endAttack(); return; }
     a.t += dt;
     const zb = this.foe.B[a.zone];
-    const goal = { x: zb.position.x + zb.velocity.x * 4, y: zb.position.y + zb.velocity.y * 4 };
+    const zv = Body.getVelocity(zb);
+    const goal = { x: zb.position.x + zv.x * 4, y: zb.position.y + zv.y * 4 };
     goal.x += (Math.sign(goal.x - a.from.x) || this.me.facing) * 28;   // 打穿一點，才有衝擊速度
     const u = clamp(a.t / D.swing, 0, 1), e = u * u;                   // 越接近目標越快
     setTarget(a.g, { x: lerp(a.from.x, goal.x, e), y: lerp(a.from.y, goal.y, e) });
@@ -413,7 +426,7 @@ class Brain {
 /* ---------- 建立 / 重置世界 ---------- */
 function buildWorld() {
   engine = Engine.create({ gravity: { x: 0, y: 1 } });
-  engine.positionIterations = 8; engine.velocityIterations = 6; engine.constraintIterations = 4;
+  engine.positionIterations = 6; engine.velocityIterations = 4; engine.constraintIterations = 2;   // 有子步，每步的迭代可以少一點
   world = engine.world;
   Composite.add(world, [
     Bodies.rectangle(W / 2, GROUND + 40, W + 600, 80, { isStatic: true, friction: 0.8, label: 'ground' }),
@@ -435,16 +448,21 @@ function stepSim(dt) {
   if (game.phase === 'ready' && game.phaseT > 1.0) { game.phase = 'fight'; game.phaseT = 0; hudMid.textContent = 'FIGHT!'; }
   else if (game.phase === 'fight' && game.phaseT > 0.7 && hudMid.textContent) hudMid.textContent = '';
 
-  for (const f of Object.values(fighters)) balance(f, dt);
+  for (const f of Object.values(fighters)) if (!f.ko) f.anchor.x = clampAnchorX(f, lerp(f.anchor.x, f.B.torso.position.x, Math.min(1, 2.5 * dt)));
   if (game.phase === 'fight') brain.update(dt);
   updateGrabs(dt);
-  Engine.update(engine, 1000 / 60);
+  // 物理子步：force 每次 Engine.update 後會被清掉，所以支撐力每個子步都要重算
+  for (let i = 0; i < SUB; i++) {
+    for (const f of Object.values(fighters)) balance(f);
+    Engine.update(engine, SDT);
+  }
 
   for (const f of Object.values(fighters)) {
     for (const b of f.parts) {
-      const sp = Math.hypot(b.velocity.x, b.velocity.y);
-      if (sp > MAX_V) Body.setVelocity(b, { x: b.velocity.x * MAX_V / sp, y: b.velocity.y * MAX_V / sp });
-      if (Math.abs(b.angularVelocity) > MAX_AV) Body.setAngularVelocity(b, Math.sign(b.angularVelocity) * MAX_AV);
+      const v = Body.getVelocity(b), sp = Math.hypot(v.x, v.y);
+      if (sp > MAX_V) Body.setVelocity(b, { x: v.x * MAX_V / sp, y: v.y * MAX_V / sp });
+      const av = Body.getAngularVelocity(b);
+      if (Math.abs(av) > MAX_AV) Body.setAngularVelocity(b, Math.sign(av) * MAX_AV);
     }
     f.flash.head = Math.max(0, f.flash.head - dt); f.flash.torso = Math.max(0, f.flash.torso - dt); f.hurt = Math.max(0, f.hurt - dt);
   }
