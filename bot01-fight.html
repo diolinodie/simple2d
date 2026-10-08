@@ -34,7 +34,16 @@ h1{font-family:var(--font-display);font-size:22px;letter-spacing:.02em}
 .fight{display:flex;flex-direction:column;gap:10px}
 .arena{position:relative;width:100%;aspect-ratio:2/1;background:var(--stage);border-radius:14px;overflow:hidden;border:1px solid var(--line)}
 .arena canvas{display:block;width:100%;height:100%}
-@media (max-width:600px){.arena{aspect-ratio:16/10}}
+@media (max-width:600px){
+  .arena{aspect-ratio:16/10}
+  body{padding-block:8px 24px}
+  h1{font-size:18px} .top{margin-bottom:6px} .top p{display:none}
+  .row{gap:6px 8px} .row label{font-size:13px;gap:4px}
+  select,button{font-size:13px;padding:4px 8px}
+  .fps{display:none}
+  /* 面板高度 = 視窗高度 − 舞台高度（寬度的 5/8）− 標題與控制列，讓腳的方塊一定在第一屏內 */
+  .pad{height:clamp(240px,calc(100dvh - (100vw - 32px) * 0.625 - 118px),460px)}
+}
 .hud{position:absolute;top:8px;left:10px;right:10px;display:flex;align-items:center;gap:10px;font-family:var(--font-display);pointer-events:none}
 .hp{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
 .hp .name{font-size:13px;font-weight:700;letter-spacing:.06em}
@@ -89,7 +98,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
           <option value="hard">困難</option>
         </select>
       </label>
-      <label>速度 <input type="range" id="speed" min="0.4" max="1.2" step="0.05" value="0.75" style="width:110px;accent-color:var(--accent)"> <output id="speedOut" style="font-family:var(--font-mono);font-size:12px">0.75</output></label>
+      <label>速度 <input type="range" id="speed" min="0.4" max="1.2" step="0.05" value="0.75" style="width:90px;accent-color:var(--accent)"> <output id="speedOut" style="font-family:var(--font-mono);font-size:12px">0.75</output></label>
       <button id="btnRestart" class="ghost" type="button">重新開始</button>
       <span class="fps" id="fps"></span>
     </div>
@@ -97,7 +106,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
 
   <section>
     <canvas id="pad" class="pad"></canvas>
-    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，拖「頭」可以低頭閃；雙腳一起抬起來會跌坐在地上，放開腳就會站回來；手腳拖不出可及範圍，要打更遠就先拖腰靠近。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。</p>
+    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，把腰快速往上甩會蹬地跳起來，拖「頭」可以低頭閃；雙腳一起抬起來會跌坐在地上，放開腳就會站回來；手腳拖不出可及範圍，要打更遠就先拖腰靠近。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。</p>
   </section>
 </main>
 
@@ -105,7 +114,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
   <summary>引擎結構說明</summary>
   <ul class="doc">
     <li><strong>物理</strong>：Matter.js。每個角色是 14 個剛體（頭、軀幹、上臂×2、前臂×2、手×2、大腿×2、小腿×2、腳×2）用長度 0 的關節 constraint 接起來的布娃娃；同一人的部件彼此不碰撞，和對手的每個部件、地面都會碰撞。每影格跑 4 個物理子步，薄的手掌和前臂才不會一步就穿過對方的手。</li>
-    <li><strong>站立與重力</strong>：至少一腳踩在地上、而且軀幹掉到站姿高度以下時，腿才會往上頂住（抵銷重力的支撐力 + 彈簧 + 阻尼），再加扶正扭矩；雙腳一離地（或被打飛到站姿高度以上）就沒有任何支撐，純粹受重力落下。手腳的拖曳目標被限制在肩、髖可及的範圍內，腰只能蹲、頭只能低，所以拖曳不會把自己吊起來。</li>
+    <li><strong>站立與重力</strong>：至少一腳踩在地上、而且軀幹掉到站姿高度以下時，腿才會往上頂住（抵銷重力的支撐力 + 彈簧 + 阻尼），再加扶正扭矩；雙腳一離地（或被打飛到站姿高度以上）就沒有任何支撐，純粹受重力落下。手腳的拖曳目標被限制在肩、髖可及的範圍內，腰只能蹲、頭只能低，所以拖曳不會把自己吊起來；把腰甩到站姿線以上時，只要腳還在地上就會蹬地跳起，離地後純粹是拋物線。面向會跟著對手的位置自動翻轉。</li>
     <li><strong>操作</strong>：手指抓住節點時，建立一條「手指 → 剛體」的彈性 constraint，CPU 也是用同一套 API 下指令。節點被衝擊推離手指太遠就自動脫手，必須重抓。</li>
     <li><strong>命中</strong>：碰撞開始事件裡，只有「手或腳」打到「對方的頭或身體」且沿法線的相對速度夠快才扣血；慢慢推不算。對方的拳頭先碰到你的前臂就打不到頭，這就是格擋，但手臂會被推歪。</li>
     <li><strong>CPU</strong>：狀態機（靠近 → 舉手防禦 → 出拳/踢 → 被打後縮頭或後退），難度決定出手間隔、出拳速度、舉手機率與脫手後重抓的反應時間。</li>
@@ -142,8 +151,9 @@ const REACH = 135;                           // 兩個軀幹中心相距多少�
 const HIT_MIN = 3.5;                         // 相對速度（px/步）低於這個只算推擠不扣血
 const MAX_V = 12, MAX_AV = 0.3;              // 速度上限，避免拳頭穿過薄薄的前臂，也讓整體動作慢一點
 const BREAK = { head: 80, torso: 110, handL: 90, handR: 90, footL: 90, footR: 90 }; // 手指和節點差多遠就脫手
+const JUMP = 4, JUMP_WINDOW = 28;            // 蹬地：力道是全身體重的幾倍、離開站姿高度多少以內還在蹬
 const GRAB_STIFF = { head: 0.035, torso: 0.03 };                                    // 其他節點 0.08（每個子步各拉一次，等於每影格約 0.28）
-const PAD_WORLD_W = 320, PAD_WORLD_H = 270, PAD_BOTTOM = 26;
+const PAD_WORLD_W = 320, PAD_WORLD_H = 270, PAD_BOTTOM = 44;   // PAD_BOTTOM：面板地面線離底邊的距離，腳的方塊才不會貼邊
 const C = { body: '#d6dde6', bodyDark: '#aab6c4', joint: '#3b4756', visor: '#202a36', eye: '#6ef2d8', pupil: '#0f2a2a', hand: '#8b97a6' };
 const TEAM = { p1: { name: 'P1', accent: '#e8890c' }, cpu: { name: 'CPU', accent: '#3b82f6' } };
 const GRABBABLE = ['head', 'torso', 'handL', 'handR', 'footL', 'footR'];
@@ -207,16 +217,21 @@ function makeFighter(id, x, facing, group) {
   const legMass = ['thighL', 'shinL', 'footL', 'thighR', 'shinR', 'footR'].reduce((m, p) => m + B[p].mass, 0);
   const totalMass = parts.reduce((m, b) => m + b.mass, 0);
   const g = engine.gravity.y * engine.gravity.scale * DT2;
-  const f = { id, facing, B, J, anchor: { x }, standY: torsoY, weight: g * (totalMass - legMass) / B.torso.mass,
+  const f = { id, facing, B, J, anchor: { x }, standY: torsoY, weight: g * (totalMass - legMass) / B.torso.mass, weightAll: g * totalMass / B.torso.mass,
     hp: 100, ko: false, cool: {}, flash: { head: 0, torso: 0 }, hurt: 0, parts };
   Composite.add(world, [...parts, ...J]);
   return f;
 }
 const foeOf = f => f.id === 'p1' ? fighters.cpu : fighters.p1;
+// 面向跟著對手在哪一邊走，差距 30 以內不翻，免得重疊時一直抖
+function updateFacing(f) {
+  const dx = foeOf(f).B.torso.position.x - f.B.torso.position.x;
+  if (Math.abs(dx) > 30) f.facing = dx > 0 ? 1 : -1;
+}
 function clampAnchorX(f, x) {
   const foeX = foeOf(f).B.torso.position.x;
-  const lo = f.id === 'p1' ? 70 : Math.max(70, foeX + 70);
-  const hi = f.id === 'p1' ? Math.min(W - 70, foeX - 70) : W - 70;
+  const lo = f.facing === 1 ? 70 : Math.max(70, foeX + 70);
+  const hi = f.facing === 1 ? Math.min(W - 70, foeX - 70) : W - 70;
   return clamp(x, Math.min(lo, hi), Math.max(lo, hi));
 }
 // Body.update 裡 angularVelocity += torque / inertia * delta²，所以反推出要的扭矩
@@ -238,6 +253,13 @@ function balance(f) {
     const ay = -clamp(f.weight + 0.12 * dy + 0.3 * v.y, -0.5 * f.weight, 2.2 * f.weight) * c;
     const ax = -(0.03 * (p.x - f.anchor.x) + 0.2 * v.x) * c;
     t.force.x += ax * t.mass / DT2; t.force.y += ay * t.mass / DT2;
+  }
+  // 跳躍：腰被甩到站姿線以上、腳還踩在地上 → 開始蹬地；蹬到離站姿 JUMP_WINDOW 高之後就放手，純拋物線
+  const tg = grabs.get(f.id + ':torso');
+  if (tg && tg.lift > 0 && !tg.jumped && c > 0.2 && dy > -1) { tg.jumped = true; f.jump = true; }
+  if (f.jump) {
+    if (dy < -JUMP_WINDOW || (c <= 0 && dy > -1)) f.jump = false;
+    else t.force.y -= JUMP * f.weightAll * clamp((tg ? tg.lift : 0) / 40, 0.35, 1) * t.mass / DT2;
   }
   upright(t, 0.025, 0.25);
   for (const p of ['thighL', 'thighR', 'shinL', 'shinR']) upright(f.B[p], 0.008, 0.1);
@@ -261,7 +283,9 @@ function setTarget(g, pt) {
   let x = pt.x - g.off.x, y = pt.y - g.off.y;
   const f = g.f, t = f.B.torso.position, part = g.part;
   if (part === 'torso') {
-    y = clamp(y, f.standY, f.standY + 45);                          // 只能蹲，不能把自己抬起來
+    g.lift = Math.max(0, f.standY - 12 - y);                        // 手指把腰甩到站姿線以上多少 = 想跳的意圖
+    if (!g.lift) g.jumped = false;                                  // 回到線下才能再跳一次
+    y = clamp(y, f.standY, f.standY + 45);                          // constraint 本身只能蹲，不能把自己吊起來
   } else if (part === 'head') {
     x = clamp(x, t.x - 34, t.x + 34); y = clamp(y, t.y - 89 * S, t.y - 60 * S);   // 低頭、側傾，不能往上拉
   } else {
@@ -282,6 +306,12 @@ function release(g, lost) {
 function updateGrabs(dt) {
   for (const g of Array.from(grabs.values())) {
     if (g.f.ko) { release(g, true); continue; }
+    if (g.part === 'torso') {
+      // 在空中（跳起或被打飛）時腰的 constraint 完全不拉，否則會像阻尼一樣把跳躍速度吃掉；落地再恢復
+      const air = g.body.position.y < g.f.standY - 1;
+      g.c.stiffness = air ? 0 : GRAB_STIFF.torso; g.c.damping = air ? 0 : 0.05;
+      if (air) g.target.y = g.body.position.y;
+    }
     g.c.pointA.x = g.target.x; g.c.pointA.y = g.target.y;
     const d = Math.hypot(g.body.position.x - g.target.x, g.body.position.y - g.target.y);
     g.strain = d / BREAK[g.part];
@@ -448,7 +478,11 @@ function stepSim(dt) {
   if (game.phase === 'ready' && game.phaseT > 1.0) { game.phase = 'fight'; game.phaseT = 0; hudMid.textContent = 'FIGHT!'; }
   else if (game.phase === 'fight' && game.phaseT > 0.7 && hudMid.textContent) hudMid.textContent = '';
 
-  for (const f of Object.values(fighters)) if (!f.ko) f.anchor.x = clampAnchorX(f, lerp(f.anchor.x, f.B.torso.position.x, Math.min(1, 2.5 * dt)));
+  for (const f of Object.values(fighters)) {
+    if (f.ko) continue;
+    updateFacing(f);
+    f.anchor.x = clampAnchorX(f, lerp(f.anchor.x, f.B.torso.position.x, Math.min(1, 2.5 * dt)));
+  }
   if (game.phase === 'fight') brain.update(dt);
   updateGrabs(dt);
   // 物理子步：force 每次 Engine.update 後會被清掉，所以支撐力每個子步都要重算
