@@ -89,6 +89,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
           <option value="hard">困難</option>
         </select>
       </label>
+      <label>速度 <input type="range" id="speed" min="0.4" max="1.2" step="0.05" value="0.75" style="width:110px;accent-color:var(--accent)"> <output id="speedOut" style="font-family:var(--font-mono);font-size:12px">0.75</output></label>
       <button id="btnRestart" class="ghost" type="button">重新開始</button>
       <span class="fps" id="fps"></span>
     </div>
@@ -96,7 +97,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
 
   <section>
     <canvas id="pad" class="pad"></canvas>
-    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，拖「頭」可以低頭閃；手腳拖不出可及範圍，要打更遠就先拖腰靠近。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。</p>
+    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，拖「頭」可以低頭閃；雙腳一起抬起來會跌坐在地上，放開腳就會站回來；手腳拖不出可及範圍，要打更遠就先拖腰靠近。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。</p>
   </section>
 </main>
 
@@ -104,7 +105,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
   <summary>引擎結構說明</summary>
   <ul class="doc">
     <li><strong>物理</strong>：Matter.js。每個角色是 14 個剛體（頭、軀幹、上臂×2、前臂×2、手×2、大腿×2、小腿×2、腳×2）用長度 0 的關節 constraint 接起來的布娃娃；同一人的部件彼此不碰撞，和對手、地面才碰撞。</li>
-    <li><strong>站立與重力</strong>：軀幹掉到站姿高度以下時，腿會往上頂住（抵銷重力的支撐力 + 彈簧 + 阻尼），再加扶正扭矩；一旦被打飛到站姿高度以上，就沒有任何支撐，純粹受重力落下。手腳的拖曳目標被限制在肩、髖可及的範圍內，腰只能蹲、頭只能低，所以拖曳不會把自己吊起來。</li>
+    <li><strong>站立與重力</strong>：至少一腳踩在地上、而且軀幹掉到站姿高度以下時，腿才會往上頂住（抵銷重力的支撐力 + 彈簧 + 阻尼），再加扶正扭矩；雙腳一離地（或被打飛到站姿高度以上）就沒有任何支撐，純粹受重力落下。手腳的拖曳目標被限制在肩、髖可及的範圍內，腰只能蹲、頭只能低，所以拖曳不會把自己吊起來。</li>
     <li><strong>操作</strong>：手指抓住節點時，建立一條「手指 → 剛體」的彈性 constraint，CPU 也是用同一套 API 下指令。節點被衝擊推離手指太遠就自動脫手，必須重抓。</li>
     <li><strong>命中</strong>：碰撞開始事件裡，只有「手或腳」打到「對方的頭或身體」且沿法線的相對速度夠快才扣血；慢慢推不算。對方的拳頭先碰到你的前臂就打不到頭，這就是格擋，但手臂會被推歪。</li>
     <li><strong>CPU</strong>：狀態機（靠近 → 舉手防禦 → 出拳/踢 → 被打後縮頭或後退），難度決定出手間隔、出拳速度、舉手機率與脫手後重抓的反應時間。</li>
@@ -137,10 +138,10 @@ const W = 800, H = 400, GROUND = 360;        // 舞台世界座標
 const S = 0.8;                               // 角色相對原版 BOT-01 的縮放
 const STEP = 1 / 60, DT2 = (1000 / 60) ** 2; // 固定步長；Matter 的 torque 公式會乘 delta²
 const REACH = 135;                           // 兩個軀幹中心相距多少時手剛好打得到
-const HIT_MIN = 4;                           // 相對速度（px/步）低於這個只算推擠不扣血
-const MAX_V = 18, MAX_AV = 0.45;             // 速度上限，避免拳頭穿過薄薄的前臂
+const HIT_MIN = 3;                           // 相對速度（px/步）低於這個只算推擠不扣血
+const MAX_V = 12, MAX_AV = 0.3;              // 速度上限，避免拳頭穿過薄薄的前臂，也讓整體動作慢一點
 const BREAK = { head: 80, torso: 110, handL: 90, handR: 90, footL: 90, footR: 90 }; // 手指和節點差多遠就脫手
-const GRAB_STIFF = { head: 0.12, torso: 0.1 };                                      // 其他節點 0.3
+const GRAB_STIFF = { head: 0.1, torso: 0.08 };                                      // 其他節點 0.22
 const PAD_WORLD_W = 320, PAD_WORLD_H = 270, PAD_BOTTOM = 26;
 const C = { body: '#d6dde6', bodyDark: '#aab6c4', joint: '#3b4756', visor: '#202a36', eye: '#6ef2d8', pupil: '#0f2a2a', hand: '#8b97a6' };
 const TEAM = { p1: { name: 'P1', accent: '#e8890c' }, cpu: { name: 'CPU', accent: '#3b82f6' } };
@@ -166,7 +167,7 @@ function refreshTheme() {
 
 /* ---------- 遊戲狀態 ---------- */
 let engine, world, fighters, brain, popups = [];
-const game = { phase: 'ready', phaseT: 0, time: 0, diff: 'normal', shake: 0 };
+const game = { phase: 'ready', phaseT: 0, time: 0, diff: 'normal', shake: 0, speed: 0.75 };   // speed：模擬時間相對真實時間的倍率
 const grabs = new Map();   // 'p1:handL' → grab
 
 /* ---------- 角色：14 個剛體 + 關節 + 傀儡線 ---------- */
@@ -174,7 +175,7 @@ const grabs = new Map();   // 'p1:handL' → grab
 // 手 r11、大腿 20×36、小腿 16×34、腳 36×12。座標以軀幹中心為原點，髖部在 +50，脖子在 -54。
 function makeFighter(id, x, facing, group) {
   const torsoY = GROUND - 128 * S;
-  const opt = (part, extra) => Object.assign({ label: id + ':' + part, collisionFilter: { group }, friction: 0.3, frictionAir: 0.02, restitution: 0.05, density: 0.001 }, extra);
+  const opt = (part, extra) => Object.assign({ label: id + ':' + part, collisionFilter: { group }, friction: 0.3, frictionAir: 0.05, restitution: 0.05, density: 0.001 }, extra);
   const rect = (part, cx, cy, w, h, extra) => Bodies.rectangle(x + cx * S, torsoY + cy * S, w * S, h * S,
     opt(part, Object.assign({ chamfer: { radius: Math.min(w, h) * 0.3 * S } }, extra)));
   const B = {};
@@ -190,7 +191,7 @@ function makeFighter(id, x, facing, group) {
   }
   const J = [];
   const pin = (a, ax, ay, b, bx, by, k = 0.8) => J.push(Constraint.create({
-    bodyA: a, pointA: { x: ax * S, y: ay * S }, bodyB: b, pointB: { x: bx * S, y: by * S }, length: 0, stiffness: k, damping: 0.05 }));
+    bodyA: a, pointA: { x: ax * S, y: ay * S }, bodyB: b, pointB: { x: bx * S, y: by * S }, length: 0, stiffness: k, damping: 0.1 }));
   pin(B.torso, -12, -54, B.head, -12, 35, 0.7); pin(B.torso, 12, -54, B.head, 12, 35, 0.7);   // 脖子兩點，頭才不會自轉
   for (const [side, sx] of [['L', -1], ['R', 1]]) {
     pin(B.torso, sx * 44, -36, B['upper' + side], 0, -18);   // 肩
@@ -219,21 +220,27 @@ function clampAnchorX(f, x) {
 }
 // Body.update 裡 angularVelocity += torque / inertia * delta²，所以反推出要的扭矩
 function upright(b, kp, kd) { b.torque = -(kp * wrap(b.angle) + kd * b.angularVelocity) * b.inertia / DT2; }
+// 腳踩地的程度：任一腳底離地 0 → 1，離地 18 以上 → 0
+function footContact(f) {
+  let c = 0;
+  for (const p of ['footL', 'footR']) c = Math.max(c, clamp(1 - (GROUND - f.B[p].bounds.max.y) / 18, 0, 1));
+  return c;
+}
 function balance(f, dt) {
   if (f.ko) return;
   const t = f.B.torso, p = t.position, v = t.velocity;
   f.anchor.x = clampAnchorX(f, lerp(f.anchor.x, p.x, Math.min(1, 2.5 * dt)));
-  // 腿的支撐：只有軀幹在站姿高度以下才往上頂（抵銷重力 + 彈簧 + 阻尼），同時把身體拉回錨點 x。
-  // 被打飛到站姿高度以上就沒有任何支撐，純粹受重力落下。force 會在 Body.update 裡換成 force / mass * delta²。
-  const dy = p.y - f.standY;
-  if (dy > -1) {
+  // 腿的支撐：要有腳踩在地上，而且軀幹在站姿高度以下，腿才往上頂（抵銷重力 + 彈簧 + 阻尼），同時把身體拉回錨點 x。
+  // 雙腳離地或被打飛到站姿高度以上就沒有任何支撐，純粹受重力落下。force 會在 Body.update 裡換成 force / mass * delta²。
+  const dy = p.y - f.standY, c = footContact(f);
+  if (dy > -1 && c > 0) {
     // 腿能出的力有上限（體重的 2.2 倍），所以被人壓住時頂不起對方，也不會彈射
-    const ay = -clamp(f.weight + 0.12 * dy + 0.2 * v.y, -0.5 * f.weight, 2.2 * f.weight);
-    const ax = -(0.03 * (p.x - f.anchor.x) + 0.12 * v.x);
+    const ay = -clamp(f.weight + 0.12 * dy + 0.3 * v.y, -0.5 * f.weight, 2.2 * f.weight) * c;
+    const ax = -(0.03 * (p.x - f.anchor.x) + 0.2 * v.x) * c;
     t.force.x += ax * t.mass / DT2; t.force.y += ay * t.mass / DT2;
   }
-  upright(t, 0.025, 0.15);
-  for (const p of ['thighL', 'thighR', 'shinL', 'shinR']) upright(f.B[p], 0.008, 0.06);
+  upright(t, 0.025, 0.25);
+  for (const p of ['thighL', 'thighR', 'shinL', 'shinR']) upright(f.B[p], 0.008, 0.1);
 }
 
 /* ---------- 抓取：手指和 CPU 共用 ---------- */
@@ -243,7 +250,7 @@ function grab(f, part, pt, owner) {
   if (grabs.has(key) || f.ko) return null;
   const body = f.B[part];
   const c = Constraint.create({ pointA: { x: body.position.x, y: body.position.y }, bodyB: body, pointB: { x: 0, y: 0 },
-    length: 0, stiffness: GRAB_STIFF[part] || 0.3, damping: 0.05 });
+    length: 0, stiffness: GRAB_STIFF[part] || 0.22, damping: 0.08 });
   Composite.add(world, c);
   const g = { key, f, part, body, c, owner, off: { x: pt.x - body.position.x, y: pt.y - body.position.y },
     target: { x: body.position.x, y: body.position.y }, strain: 0, over: 0, lost: false };
@@ -301,7 +308,7 @@ function checkHit(a, b, pair) {
   const v = Math.abs(rvx * n.x + rvy * n.y);
   if (v < HIT_MIN) return;
   striker.cool[la[1]] = game.time + 0.3;
-  let dmg = (v - HIT_MIN) * 1.6;
+  let dmg = (v - HIT_MIN) * 2.0;
   if (lb[1] === 'head') dmg *= 1.4;
   if (la[1].startsWith('foot')) dmg *= 1.2;
   dmg = clamp(Math.round(dmg), 1, 18);
@@ -638,7 +645,7 @@ let last = performance.now(), acc = 0, frames = 0, fpsT = 0, running = true;
 function frame(now) {
   requestAnimationFrame(frame);
   if (!running) { last = now; return; }
-  const d = Math.min(0.1, (now - last) / 1000); last = now; acc += d;
+  const d = Math.min(0.1, (now - last) / 1000); last = now; acc += d * game.speed;
   let steps = 0;
   while (acc >= STEP && steps < 3) { stepSim(STEP); acc -= STEP; steps++; }
   if (steps === 3) acc = 0;
@@ -649,6 +656,7 @@ function frame(now) {
 }
 document.addEventListener('visibilitychange', () => { running = !document.hidden; last = performance.now(); acc = 0; });
 $('difficulty').addEventListener('change', e => { game.diff = e.target.value; });
+$('speed').addEventListener('input', e => { game.speed = parseFloat(e.target.value); $('speedOut').textContent = game.speed.toFixed(2); });
 $('btnRestart').addEventListener('click', buildWorld);
 $('btnAgain').addEventListener('click', buildWorld);
 
