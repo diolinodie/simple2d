@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BOT-01 物理格鬥</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* 版面：上方對戰舞台，下方 P1 操作面板；手機直向也是上下排 */
+:root{
+  --bg:#eef1f5; --surface:#ffffff; --fg:#1b2430; --muted:#5c6b7d; --line:#d3dae3;
+  --accent:#e8890c; --accent-ink:#ffffff; --stage:#dde4ec; --ground:#9aa8b8; --focus:#2b6cb0; --cpu:#3b82f6;
+  --font-display:'Chakra Petch','Noto Sans TC',system-ui,sans-serif;
+  --font-body:'Noto Sans TC',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#141a22; --surface:#1c242e; --fg:#e6ebf1; --muted:#95a3b4; --line:#2d3845;
+    --accent:#f5a033; --accent-ink:#1b2430; --stage:#0f141b; --ground:#3d4b5c; --focus:#7fb3ff; --cpu:#5b9cff; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#141a22; --surface:#1c242e; --fg:#e6ebf1; --muted:#95a3b4; --line:#2d3845;
+  --accent:#f5a033; --accent-ink:#1b2430; --stage:#0f141b; --ground:#3d4b5c; --focus:#7fb3ff; --cpu:#5b9cff; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{overscroll-behavior:none}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:15px;line-height:1.55;padding-inline:16px;padding-block:14px 32px;max-width:900px;margin:0 auto}
+h1,h2{margin:0;text-wrap:balance}
+h1{font-family:var(--font-display);font-size:22px;letter-spacing:.02em}
+.top{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin-bottom:10px}
+.top p{margin:0;color:var(--muted);font-size:13px}
+.fight{display:flex;flex-direction:column;gap:10px}
+.arena{position:relative;width:100%;aspect-ratio:2/1;background:var(--stage);border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+.arena canvas{display:block;width:100%;height:100%}
+@media (max-width:600px){.arena{aspect-ratio:16/10}}
+.hud{position:absolute;top:8px;left:10px;right:10px;display:flex;align-items:center;gap:10px;font-family:var(--font-display);pointer-events:none}
+.hp{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
+.hp .name{font-size:13px;font-weight:700;letter-spacing:.06em}
+.hp.p1 .name{color:var(--accent)} .hp.cpu .name{color:var(--cpu)}
+.hp .bar{flex:1;height:12px;background:rgba(0,0,0,.25);border-radius:6px;overflow:hidden;border:1px solid var(--line)}
+.hp .bar i{display:block;height:100%;width:100%;background:var(--accent);transition:width .12s}
+.hp.cpu .bar{transform:scaleX(-1)} .hp.cpu .bar i{background:var(--cpu)}
+.mid{min-width:72px;text-align:center;font-weight:700;letter-spacing:.12em;font-size:14px;color:var(--fg)}
+.banner{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(0,0,0,.38);color:#fff;font-family:var(--font-display)}
+.banner[hidden]{display:none}
+.banner b{font-size:clamp(26px,6vw,44px);letter-spacing:.08em;text-shadow:0 2px 12px rgba(0,0,0,.5)}
+.err{position:absolute;inset:0;display:grid;place-items:center;padding:20px;text-align:center;color:var(--muted)}
+.err[hidden]{display:none}
+.row{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+.row label{display:flex;align-items:center;gap:6px;font-size:14px}
+select,button{font:inherit;font-size:14px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--fg);cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:focus-visible,select:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:500}
+button.ghost{background:transparent}
+.pad{display:block;width:100%;height:clamp(280px,48vh,460px);background:var(--surface);border:1px solid var(--line);border-radius:14px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.hint{margin:0;font-size:13px;color:var(--muted)}
+.hint code{font-family:var(--font-mono);font-size:12px;background:var(--surface);padding:1px 5px;border-radius:4px}
+details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-size:13px}
+.doc{font-size:14px;color:var(--muted)} .doc li{margin-bottom:4px}
+.fps{font-family:var(--font-mono);font-size:12px;color:var(--muted);margin-left:auto}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>BOT-01 物理格鬥</h1>
+  <p>1P vs CPU。拖下方的方塊操作上方橘色的 BOT-01；打到對方的頭或身體才算分。</p>
+</header>
+
+<main class="fight">
+  <section>
+    <div class="arena" id="arenaWrap">
+      <canvas id="arena"></canvas>
+      <div class="hud">
+        <div class="hp p1"><span class="name">P1</span><div class="bar"><i id="hpP1"></i></div></div>
+        <div class="mid" id="hudMid">READY</div>
+        <div class="hp cpu"><div class="bar"><i id="hpCpu"></i></div><span class="name">CPU</span></div>
+      </div>
+      <div class="banner" id="banner" hidden><b id="bannerText">KO</b><button id="btnAgain" class="primary" type="button">再來一場</button></div>
+      <div class="err" id="err" hidden></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label>難度
+        <select id="difficulty">
+          <option value="easy">簡單</option>
+          <option value="normal" selected>普通</option>
+          <option value="hard">困難</option>
+        </select>
+      </label>
+      <button id="btnRestart" class="ghost" type="button">重新開始</button>
+      <span class="fps" id="fps"></span>
+    </div>
+  </section>
+
+  <section>
+    <canvas id="pad" class="pad"></canvas>
+    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，拖「頭」可以低頭閃；手腳拖不出可及範圍，要打更遠就先拖腰靠近。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。</p>
+  </section>
+</main>
+
+<details>
+  <summary>引擎結構說明</summary>
+  <ul class="doc">
+    <li><strong>物理</strong>：Matter.js。每個角色是 14 個剛體（頭、軀幹、上臂×2、前臂×2、手×2、大腿×2、小腿×2、腳×2）用長度 0 的關節 constraint 接起來的布娃娃；同一人的部件彼此不碰撞，和對手、地面才碰撞。</li>
+    <li><strong>站立與重力</strong>：軀幹掉到站姿高度以下時，腿會往上頂住（抵銷重力的支撐力 + 彈簧 + 阻尼），再加扶正扭矩；一旦被打飛到站姿高度以上，就沒有任何支撐，純粹受重力落下。手腳的拖曳目標被限制在肩、髖可及的範圍內，腰只能蹲、頭只能低，所以拖曳不會把自己吊起來。</li>
+    <li><strong>操作</strong>：手指抓住節點時，建立一條「手指 → 剛體」的彈性 constraint，CPU 也是用同一套 API 下指令。節點被衝擊推離手指太遠就自動脫手，必須重抓。</li>
+    <li><strong>命中</strong>：碰撞開始事件裡，只有「手或腳」打到「對方的頭或身體」且沿法線的相對速度夠快才扣血；慢慢推不算。對方的拳頭先碰到你的前臂就打不到頭，這就是格擋，但手臂會被推歪。</li>
+    <li><strong>CPU</strong>：狀態機（靠近 → 舉手防禦 → 出拳/踢 → 被打後縮頭或後退），難度決定出手間隔、出拳速度、舉手機率與脫手後重抓的反應時間。</li>
+  </ul>
+</details>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+<script>
+(function () {
+'use strict';
+const errEl = document.getElementById('err');
+if (typeof Matter === 'undefined') {
+  errEl.hidden = false; errEl.textContent = 'Matter.js 沒有載入成功，請檢查網路後重新整理。'; return;
+}
+const { Engine, Bodies, Body, Composite, Constraint, Events, Vector } = Matter;
+
+/* ---------- 工具 ---------- */
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+const rand = (a, b) => a + Math.random() * (b - a);
+function cssColor(name, fb) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return /^#[0-9a-f]{6}$/i.test(v) ? v : fb;
+}
+
+/* ---------- 常數 ---------- */
+const W = 800, H = 400, GROUND = 360;        // 舞台世界座標
+const S = 0.8;                               // 角色相對原版 BOT-01 的縮放
+const STEP = 1 / 60, DT2 = (1000 / 60) ** 2; // 固定步長；Matter 的 torque 公式會乘 delta²
+const REACH = 135;                           // 兩個軀幹中心相距多少時手剛好打得到
+const HIT_MIN = 4;                           // 相對速度（px/步）低於這個只算推擠不扣血
+const MAX_V = 18, MAX_AV = 0.45;             // 速度上限，避免拳頭穿過薄薄的前臂
+const BREAK = { head: 80, torso: 110, handL: 90, handR: 90, footL: 90, footR: 90 }; // 手指和節點差多遠就脫手
+const GRAB_STIFF = { head: 0.12, torso: 0.1 };                                      // 其他節點 0.3
+const PAD_WORLD_W = 320, PAD_WORLD_H = 270, PAD_BOTTOM = 26;
+const C = { body: '#d6dde6', bodyDark: '#aab6c4', joint: '#3b4756', visor: '#202a36', eye: '#6ef2d8', pupil: '#0f2a2a', hand: '#8b97a6' };
+const TEAM = { p1: { name: 'P1', accent: '#e8890c' }, cpu: { name: 'CPU', accent: '#3b82f6' } };
+const GRABBABLE = ['head', 'torso', 'handL', 'handR', 'footL', 'footR'];
+const LABELS = { head: '頭', torso: '腰', handL: '左手', handR: '右手', footL: '左腳', footR: '右腳' };
+const NODE_SIZE = { head: [60, 52], torso: [72, 64], handL: [48, 48], handR: [48, 48], footL: [50, 44], footR: [50, 44] };
+const DIFFS = {
+  easy:   { interval: 2.2,  swing: 0.34, guard: 0.4,  speed: 45, react: 0.7 },
+  normal: { interval: 1.4,  swing: 0.22, guard: 0.7,  speed: 65, react: 0.4 },
+  hard:   { interval: 0.8,  swing: 0.15, guard: 0.95, speed: 90, react: 0.2 },
+};
+
+/* ---------- DOM ---------- */
+const $ = id => document.getElementById(id);
+const hpP1 = $('hpP1'), hpCpu = $('hpCpu'), hudMid = $('hudMid'), banner = $('banner'), bannerText = $('bannerText'), fpsEl = $('fps');
+const arena = { canvas: $('arena'), ctx: $('arena').getContext('2d'), w: 800, h: 400, dpr: 1 };
+const pad = { canvas: $('pad'), ctx: $('pad').getContext('2d'), w: 400, h: 300, dpr: 1, scale: 1, cx: 250, pointers: new Map() };
+const theme = {};
+function refreshTheme() {
+  theme.ground = cssColor('--ground', '#9aa8b8'); theme.muted = cssColor('--muted', '#5c6b7d'); theme.fg = cssColor('--fg', '#1b2430');
+  theme.bg = cssColor('--bg', '#eef1f5'); theme.line = cssColor('--line', '#d3dae3'); theme.surface = cssColor('--surface', '#ffffff');
+}
+
+/* ---------- 遊戲狀態 ---------- */
+let engine, world, fighters, brain, popups = [];
+const game = { phase: 'ready', phaseT: 0, time: 0, diff: 'normal', shake: 0 };
+const grabs = new Map();   // 'p1:handL' → grab
+
+/* ---------- 角色：14 個剛體 + 關節 + 傀儡線 ---------- */
+// 尺寸沿用 bot01-rig.html：軀幹 90×100、頭 92×74、上臂 16×36（樞軸距 34）、前臂 14×34（距 32）、
+// 手 r11、大腿 20×36、小腿 16×34、腳 36×12。座標以軀幹中心為原點，髖部在 +50，脖子在 -54。
+function makeFighter(id, x, facing, group) {
+  const torsoY = GROUND - 128 * S;
+  const opt = (part, extra) => Object.assign({ label: id + ':' + part, collisionFilter: { group }, friction: 0.3, frictionAir: 0.02, restitution: 0.05, density: 0.001 }, extra);
+  const rect = (part, cx, cy, w, h, extra) => Bodies.rectangle(x + cx * S, torsoY + cy * S, w * S, h * S,
+    opt(part, Object.assign({ chamfer: { radius: Math.min(w, h) * 0.3 * S } }, extra)));
+  const B = {};
+  B.torso = rect('torso', 0, 0, 90, 100, { density: 0.0014, chamfer: { radius: 14 * S } });
+  B.head = rect('head', 0, -89, 92, 74, { density: 0.0007, chamfer: { radius: 16 * S } });
+  for (const [side, sx] of [['L', -1], ['R', 1]]) {
+    B['upper' + side] = rect('upper' + side, sx * 44, -36 + 18, 16, 36);
+    B['fore' + side] = rect('fore' + side, sx * 44, -36 + 34 + 17, 14, 34);
+    B['hand' + side] = Bodies.circle(x + sx * 44 * S, torsoY + (-36 + 34 + 32 + 4) * S, 11 * S, opt('hand' + side, { density: 0.002, friction: 0.5 }));
+    B['thigh' + side] = rect('thigh' + side, sx * 22, 50 + 18, 20, 36);
+    B['shin' + side] = rect('shin' + side, sx * 22, 50 + 34 + 17, 16, 34);
+    B['foot' + side] = rect('foot' + side, sx * 22, 50 + 34 + 32 + 6, 36, 12, { density: 0.002, friction: 0.9 });
+  }
+  const J = [];
+  const pin = (a, ax, ay, b, bx, by, k = 0.8) => J.push(Constraint.create({
+    bodyA: a, pointA: { x: ax * S, y: ay * S }, bodyB: b, pointB: { x: bx * S, y: by * S }, length: 0, stiffness: k, damping: 0.05 }));
+  pin(B.torso, -12, -54, B.head, -12, 35, 0.7); pin(B.torso, 12, -54, B.head, 12, 35, 0.7);   // 脖子兩點，頭才不會自轉
+  for (const [side, sx] of [['L', -1], ['R', 1]]) {
+    pin(B.torso, sx * 44, -36, B['upper' + side], 0, -18);   // 肩
+    pin(B['upper' + side], 0, 16, B['fore' + side], 0, -17); // 肘
+    pin(B['fore' + side], 0, 15, B['hand' + side], 0, -4);   // 腕
+    pin(B.torso, sx * 22, 50, B['thigh' + side], 0, -18);    // 髖
+    pin(B['thigh' + side], 0, 16, B['shin' + side], 0, -17); // 膝
+    pin(B['shin' + side], 0, 15, B['foot' + side], 0, -6);   // 踝
+  }
+  // 站姿：軀幹掉到 standY 以下時，腿會往上頂（見 balance），在空中就只剩重力。weight 是腿以外的部件每步被重力加的速度，換算到軀幹上
+  const parts = Object.values(B);
+  const legMass = ['thighL', 'shinL', 'footL', 'thighR', 'shinR', 'footR'].reduce((m, p) => m + B[p].mass, 0);
+  const totalMass = parts.reduce((m, b) => m + b.mass, 0);
+  const g = engine.gravity.y * engine.gravity.scale * DT2;
+  const f = { id, facing, B, J, anchor: { x }, standY: torsoY, weight: g * (totalMass - legMass) / B.torso.mass,
+    hp: 100, ko: false, cool: {}, flash: { head: 0, torso: 0 }, hurt: 0, parts };
+  Composite.add(world, [...parts, ...J]);
+  return f;
+}
+const foeOf = f => f.id === 'p1' ? fighters.cpu : fighters.p1;
+function clampAnchorX(f, x) {
+  const foeX = foeOf(f).B.torso.position.x;
+  const lo = f.id === 'p1' ? 70 : Math.max(70, foeX + 70);
+  const hi = f.id === 'p1' ? Math.min(W - 70, foeX - 70) : W - 70;
+  return clamp(x, Math.min(lo, hi), Math.max(lo, hi));
+}
+// Body.update 裡 angularVelocity += torque / inertia * delta²，所以反推出要的扭矩
+function upright(b, kp, kd) { b.torque = -(kp * wrap(b.angle) + kd * b.angularVelocity) * b.inertia / DT2; }
+function balance(f, dt) {
+  if (f.ko) return;
+  const t = f.B.torso, p = t.position, v = t.velocity;
+  f.anchor.x = clampAnchorX(f, lerp(f.anchor.x, p.x, Math.min(1, 2.5 * dt)));
+  // 腿的支撐：只有軀幹在站姿高度以下才往上頂（抵銷重力 + 彈簧 + 阻尼），同時把身體拉回錨點 x。
+  // 被打飛到站姿高度以上就沒有任何支撐，純粹受重力落下。force 會在 Body.update 裡換成 force / mass * delta²。
+  const dy = p.y - f.standY;
+  if (dy > -1) {
+    // 腿能出的力有上限（體重的 2.2 倍），所以被人壓住時頂不起對方，也不會彈射
+    const ay = -clamp(f.weight + 0.12 * dy + 0.2 * v.y, -0.5 * f.weight, 2.2 * f.weight);
+    const ax = -(0.03 * (p.x - f.anchor.x) + 0.12 * v.x);
+    t.force.x += ax * t.mass / DT2; t.force.y += ay * t.mass / DT2;
+  }
+  upright(t, 0.025, 0.15);
+  for (const p of ['thighL', 'thighR', 'shinL', 'shinR']) upright(f.B[p], 0.008, 0.06);
+}
+
+/* ---------- 抓取：手指和 CPU 共用 ---------- */
+// 抓住時記下「手指 − 剛體中心」的偏移，之後用手指位置減偏移當目標，按下去不會跳。
+function grab(f, part, pt, owner) {
+  const key = f.id + ':' + part;
+  if (grabs.has(key) || f.ko) return null;
+  const body = f.B[part];
+  const c = Constraint.create({ pointA: { x: body.position.x, y: body.position.y }, bodyB: body, pointB: { x: 0, y: 0 },
+    length: 0, stiffness: GRAB_STIFF[part] || 0.3, damping: 0.05 });
+  Composite.add(world, c);
+  const g = { key, f, part, body, c, owner, off: { x: pt.x - body.position.x, y: pt.y - body.position.y },
+    target: { x: body.position.x, y: body.position.y }, strain: 0, over: 0, lost: false };
+  grabs.set(key, g);
+  return g;
+}
+function setTarget(g, pt) {
+  let x = pt.x - g.off.x, y = pt.y - g.off.y;
+  const f = g.f, t = f.B.torso.position, part = g.part;
+  if (part === 'torso') {
+    y = clamp(y, f.standY, f.standY + 45);                          // 只能蹲，不能把自己抬起來
+  } else if (part === 'head') {
+    x = clamp(x, t.x - 34, t.x + 34); y = clamp(y, t.y - 89 * S, t.y - 60 * S);   // 低頭、側傾，不能往上拉
+  } else {
+    // 手腳只能在肩 / 髖的可及範圍內，所以拉不動身體，也不會把自己吊起來
+    const side = part.endsWith('L') ? -1 : 1, hand = part.startsWith('hand');
+    const j = Vector.add(t, Vector.rotate({ x: side * (hand ? 44 : 22) * S, y: (hand ? -36 : 50) * S }, f.B.torso.angle));
+    const reach = (hand ? 68 : 70) * S;   // 略小於臂長 70S / 腿長 72S，手腳到極限時不會持續拉身體
+    const dx = x - j.x, dy = y - j.y, d = Math.hypot(dx, dy);
+    if (d > reach) { x = j.x + dx / d * reach; y = j.y + dy / d * reach; }
+  }
+  g.target.x = x; g.target.y = y;
+}
+function release(g, lost) {
+  if (grabs.get(g.key) !== g) return;
+  Composite.remove(world, g.c); grabs.delete(g.key); g.lost = !!lost;
+  if (lost && g.owner === 'cpu') brain.onLost(g.part);
+}
+function updateGrabs(dt) {
+  for (const g of Array.from(grabs.values())) {
+    if (g.f.ko) { release(g, true); continue; }
+    g.c.pointA.x = g.target.x; g.c.pointA.y = g.target.y;
+    const d = Math.hypot(g.body.position.x - g.target.x, g.body.position.y - g.target.y);
+    g.strain = d / BREAK[g.part];
+    g.over = g.strain > 1 ? g.over + dt : 0;
+    if (g.over > 0.12) { release(g, true); continue; }   // 被撞開太久就脫手
+    if (g.part === 'torso') g.f.anchor.x = clampAnchorX(g.f, g.target.x);
+  }
+}
+
+/* ---------- 命中判定 ---------- */
+function onCollision(ev) {
+  for (const pair of ev.pairs) { checkHit(pair.bodyA, pair.bodyB, pair); checkHit(pair.bodyB, pair.bodyA, pair); }
+}
+function checkHit(a, b, pair) {
+  if (game.phase !== 'fight') return;
+  const la = a.label.split(':'), lb = b.label.split(':');
+  if (la.length < 2 || lb.length < 2 || la[0] === lb[0]) return;
+  if (!/^(hand|foot)/.test(la[1]) || !/^(head|torso)$/.test(lb[1])) return;
+  const striker = fighters[la[0]], victim = fighters[lb[0]];
+  if (!striker || !victim || victim.ko || striker.ko) return;
+  if ((striker.cool[la[1]] || 0) > game.time) return;
+  const n = pair.collision.normal;
+  const rvx = a.velocity.x - b.velocity.x, rvy = a.velocity.y - b.velocity.y;
+  const v = Math.abs(rvx * n.x + rvy * n.y);
+  if (v < HIT_MIN) return;
+  striker.cool[la[1]] = game.time + 0.3;
+  let dmg = (v - HIT_MIN) * 1.6;
+  if (lb[1] === 'head') dmg *= 1.4;
+  if (la[1].startsWith('foot')) dmg *= 1.2;
+  dmg = clamp(Math.round(dmg), 1, 18);
+  applyHit(victim, lb[1], dmg, b.position, striker);
+}
+function applyHit(victim, zone, dmg, at, striker) {
+  victim.hp = Math.max(0, victim.hp - dmg);
+  victim.flash[zone] = 0.18; victim.hurt = 0.4;
+  popups.push({ x: at.x, y: at.y - 24, text: '-' + dmg, t: 0, color: TEAM[striker.id].accent });
+  game.shake = Math.max(game.shake, Math.min(0.25, 0.06 + dmg * 0.006));
+  if (victim.id === 'cpu') brain.onHit(); else brain.onLanded();
+  if (victim.hp <= 0) knockout(victim);
+}
+function knockout(v) {
+  v.ko = true;
+  for (const g of Array.from(grabs.values())) if (g.f === v) release(g, true);
+  game.phase = 'ko'; game.phaseT = 0;
+  bannerText.textContent = 'KO！' + (v.id === 'p1' ? 'CPU' : 'P1') + ' 勝';
+  banner.hidden = false; hudMid.textContent = 'KO';
+}
+
+/* ---------- CPU：用和玩家相同的 grab / setTarget 下指令 ---------- */
+class Brain {
+  constructor(me, foe) {
+    this.me = me; this.foe = foe; this.state = 'guard'; this.t = 0; this.next = 1.4; this.decide = 0;
+    this.guardUp = true; this.streak = 0; this.atk = null; this.lostUntil = {};
+  }
+  get D() { return DIFFS[game.diff]; }
+  sides() { const f = this.me.facing; return { front: f === 1 ? 'R' : 'L', back: f === 1 ? 'L' : 'R' }; }
+  onLost(part) { this.lostUntil[part] = game.time + this.D.react; if (this.atk && this.atk.part === part) this.endAttack(); }
+  onLanded() { this.streak = 0; }
+  onHit() {
+    this.streak++; this.endAttack();
+    if (this.streak >= 2 && Math.random() < 0.6) { this.state = 'retreat'; this.t = 0.7; this.streak = 0; }
+    else { this.state = 'recover'; this.t = 0.35; }
+  }
+  update(dt) {
+    const me = this.me, foe = this.foe, D = this.D;
+    if (me.ko || foe.ko) return;
+    const dx = foe.B.torso.position.x - me.B.torso.position.x, dist = Math.abs(dx), dir = Math.sign(dx) || me.facing;
+    let move = 0;
+    if (this.state === 'retreat') move = -dir; else if (dist > REACH + 25) move = dir; else if (dist < REACH - 35) move = -dir;
+    if (move) me.anchor.x = clampAnchorX(me, me.anchor.x + move * D.speed * dt);
+    this.t -= dt; this.decide -= dt; this.next -= dt;
+    if (this.decide <= 0) { this.decide = 0.5; this.guardUp = Math.random() < D.guard; }
+    if (this.state === 'attack') { this.runAttack(dt); return; }
+    if (this.state === 'recover') {
+      this.duck();
+      if (this.t <= 0) { const g = grabs.get(me.id + ':head'); if (g) release(g); this.state = 'guard'; this.next = Math.min(this.next, 0.3); }
+      return;
+    }
+    if (this.state === 'retreat' && this.t <= 0) this.state = 'guard';
+    this.holdGuard();
+    if (this.state === 'guard' && this.next <= 0 && dist < REACH + 45) this.startAttack();
+  }
+  wantGrab(part) {
+    if ((this.lostUntil[part] || 0) > game.time) return null;      // 脫手後要等反應時間才重抓
+    let g = grabs.get(this.me.id + ':' + part);
+    if (!g) g = grab(this.me, part, this.me.B[part].position, 'cpu');
+    return g;
+  }
+  holdGuard() {
+    const me = this.me, f = me.facing, tp = me.B.torso.position, { front, back } = this.sides();
+    const wants = { ['hand' + front]: { x: tp.x + f * 44, y: tp.y - 64 }, ['hand' + back]: { x: tp.x + f * 20, y: tp.y - 30 } };
+    for (const part in wants) {
+      if (!this.guardUp) { const g = grabs.get(me.id + ':' + part); if (g && g.owner === 'cpu') release(g); continue; }
+      const g = this.wantGrab(part); if (g) setTarget(g, wants[part]);
+    }
+  }
+  duck() {
+    const me = this.me, tp = me.B.torso.position;
+    const g = this.wantGrab('head'); if (g) setTarget(g, { x: tp.x - me.facing * 14, y: tp.y - 50 });
+  }
+  startAttack() {
+    const { front, back } = this.sides(), r = Math.random();
+    const part = r < 0.45 ? 'hand' + front : r < 0.72 ? 'hand' + back : 'foot' + front;
+    const zone = Math.random() < 0.55 ? 'head' : 'torso';
+    const g = this.wantGrab(part); if (!g) { this.next = 0.3; return; }
+    const b = this.me.B[part].position;
+    this.atk = { part, zone, g, from: { x: b.x, y: b.y }, t: 0 };
+    this.state = 'attack';
+  }
+  runAttack(dt) {
+    const a = this.atk, D = this.D;
+    if (!a || grabs.get(a.g.key) !== a.g) { this.endAttack(); return; }
+    a.t += dt;
+    const zb = this.foe.B[a.zone];
+    const goal = { x: zb.position.x + zb.velocity.x * 4, y: zb.position.y + zb.velocity.y * 4 };
+    goal.x += (Math.sign(goal.x - a.from.x) || this.me.facing) * 28;   // 打穿一點，才有衝擊速度
+    const u = clamp(a.t / D.swing, 0, 1), e = u * u;                   // 越接近目標越快
+    setTarget(a.g, { x: lerp(a.from.x, goal.x, e), y: lerp(a.from.y, goal.y, e) });
+    if (a.t > D.swing + 0.12) this.endAttack();
+  }
+  endAttack() {
+    const a = this.atk; this.atk = null;
+    if (a && a.part.startsWith('foot')) { const g = grabs.get(this.me.id + ':' + a.part); if (g && g.owner === 'cpu') release(g); }
+    if (this.state === 'attack') this.state = 'guard';
+    this.next = this.D.interval * rand(0.6, 1.4);
+  }
+}
+
+/* ---------- 建立 / 重置世界 ---------- */
+function buildWorld() {
+  engine = Engine.create({ gravity: { x: 0, y: 1 } });
+  engine.positionIterations = 8; engine.velocityIterations = 6; engine.constraintIterations = 4;
+  world = engine.world;
+  Composite.add(world, [
+    Bodies.rectangle(W / 2, GROUND + 40, W + 600, 80, { isStatic: true, friction: 0.8, label: 'ground' }),
+    Bodies.rectangle(-40, H / 2, 80, H * 4, { isStatic: true, label: 'wall' }),
+    Bodies.rectangle(W + 40, H / 2, 80, H * 4, { isStatic: true, label: 'wall' }),
+  ]);
+  grabs.clear(); pad.pointers.clear(); popups = [];
+  fighters = { p1: makeFighter('p1', 250, 1, -1), cpu: makeFighter('cpu', 550, -1, -2) };
+  brain = new Brain(fighters.cpu, fighters.p1);
+  Events.on(engine, 'collisionStart', onCollision);
+  game.phase = 'ready'; game.phaseT = 0; game.time = 0; game.shake = 0;
+  pad.cx = 250; cam.cx = W / 2; cam.vw = W;
+  banner.hidden = true; hudMid.textContent = 'READY';
+}
+
+/* ---------- 模擬一步 ---------- */
+function stepSim(dt) {
+  game.time += dt; game.phaseT += dt;
+  if (game.phase === 'ready' && game.phaseT > 1.0) { game.phase = 'fight'; game.phaseT = 0; hudMid.textContent = 'FIGHT!'; }
+  else if (game.phase === 'fight' && game.phaseT > 0.7 && hudMid.textContent) hudMid.textContent = '';
+
+  for (const f of Object.values(fighters)) balance(f, dt);
+  if (game.phase === 'fight') brain.update(dt);
+  updateGrabs(dt);
+  Engine.update(engine, 1000 / 60);
+
+  for (const f of Object.values(fighters)) {
+    for (const b of f.parts) {
+      const sp = Math.hypot(b.velocity.x, b.velocity.y);
+      if (sp > MAX_V) Body.setVelocity(b, { x: b.velocity.x * MAX_V / sp, y: b.velocity.y * MAX_V / sp });
+      if (Math.abs(b.angularVelocity) > MAX_AV) Body.setAngularVelocity(b, Math.sign(b.angularVelocity) * MAX_AV);
+    }
+    f.flash.head = Math.max(0, f.flash.head - dt); f.flash.torso = Math.max(0, f.flash.torso - dt); f.hurt = Math.max(0, f.hurt - dt);
+  }
+  for (const p of popups) p.t += dt;
+  popups = popups.filter(p => p.t < 0.9);
+  game.shake = Math.max(0, game.shake - dt);
+  pad.cx = clamp(lerp(pad.cx, fighters.p1.B.torso.position.x, Math.min(1, 4 * dt)), PAD_WORLD_W / 2, W - PAD_WORLD_W / 2);
+}
+
+/* ---------- 上方舞台繪圖：BOT-01 造型 ---------- */
+function rr(ctx, x, y, w, h, r, fill) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+}
+function circ(ctx, x, y, r, fill) { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fillStyle = fill; ctx.fill(); }
+// 以剛體位置/角度為基準，再平移到原版圖形的樞軸原點，之後就能直接用原版座標畫
+function withBody(ctx, b, ox, oy, fn) {
+  ctx.save(); ctx.translate(b.position.x, b.position.y); ctx.rotate(b.angle); ctx.scale(S, S); ctx.translate(ox, oy); fn(); ctx.restore();
+}
+function drawGround(ctx) {
+  ctx.strokeStyle = theme.ground; ctx.globalAlpha = 0.9; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, GROUND); ctx.lineTo(W, GROUND); ctx.stroke();
+  ctx.globalAlpha = 0.35; ctx.lineWidth = 1; ctx.beginPath();
+  for (let x = 20; x < W; x += 40) { ctx.moveTo(x, GROUND + 8); ctx.lineTo(x + 14, GROUND + 8); }
+  ctx.stroke(); ctx.globalAlpha = 1;
+}
+function drawFighter(ctx, f) {
+  const B = f.B, ac = TEAM[f.id].accent, front = f.facing === 1 ? 'R' : 'L', back = f.facing === 1 ? 'L' : 'R';
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(B.torso.position.x, GROUND + 2, 44, 7, 0, 0, TAU); ctx.fill();
+  const arm = side => {
+    withBody(ctx, B['upper' + side], 0, -18, () => { rr(ctx, -8, 0, 16, 36, 6, C.bodyDark); circ(ctx, 0, 0, 9, C.joint); });
+    withBody(ctx, B['fore' + side], 0, -17, () => { rr(ctx, -7, 0, 14, 34, 6, C.body); circ(ctx, 0, 0, 8, C.joint); });
+    withBody(ctx, B['hand' + side], 0, 0, () => { circ(ctx, 0, 0, 11, C.hand); circ(ctx, 0, 0, 6, ac); });
+  };
+  const leg = side => {
+    withBody(ctx, B['thigh' + side], 0, -18, () => { rr(ctx, -10, 0, 20, 36, 6, C.bodyDark); circ(ctx, 0, 0, 10, C.joint); });
+    withBody(ctx, B['shin' + side], 0, -17, () => { rr(ctx, -8, 0, 16, 34, 6, C.body); circ(ctx, 0, 0, 8, C.joint); });
+    withBody(ctx, B['foot' + side], 0, -6, () => { rr(ctx, -18, 0, 36, 12, 5, C.joint); rr(ctx, -18, 4, 36, 3, 1, ac); });
+  };
+  arm(back); leg(back); leg(front);
+  withBody(ctx, B.torso, 0, 50, () => {
+    rr(ctx, -10, -108, 20, 14, 4, C.joint);          // 脖子
+    rr(ctx, -45, -100, 90, 100, 16, C.body);          // 軀幹
+    rr(ctx, -30, -84, 60, 44, 8, C.visor);            // 胸口面板
+    rr(ctx, -22, -76, 44, 6, 3, ac);                  // 面板燈條
+    circ(ctx, -14, -58, 4, C.eye); circ(ctx, 0, -58, 4, ac); circ(ctx, 14, -58, 4, C.eye);
+    rr(ctx, -45, -22, 90, 6, 2, C.bodyDark);          // 腰帶
+    rr(ctx, -34, -10, 68, 16, 7, C.joint);            // 骨盆
+    if (f.flash.torso > 0) rr(ctx, -45, -100, 90, 100, 16, `rgba(255,255,255,${Math.min(1, f.flash.torso * 4)})`);
+  });
+  arm(front);
+  withBody(ctx, B.head, 0, 35, () => {
+    rr(ctx, -2, -94, 4, 24, 2, C.joint); circ(ctx, 0, -96, 7, ac);   // 天線
+    rr(ctx, -46, -72, 92, 74, 18, C.body);
+    rr(ctx, -36, -58, 72, 46, 12, C.visor);
+    circ(ctx, -46, -36, 8, C.joint); circ(ctx, 46, -36, 8, C.joint); circ(ctx, -46, -36, 3, ac); circ(ctx, 46, -36, 3, ac);
+    if (f.hurt > 0 || f.ko) {
+      ctx.strokeStyle = C.eye; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      for (const ex of [-17, 17]) { ctx.beginPath(); ctx.moveTo(ex - 6, -44); ctx.lineTo(ex + 6, -32); ctx.moveTo(ex + 6, -44); ctx.lineTo(ex - 6, -32); ctx.stroke(); }
+      ctx.fillStyle = C.eye; ctx.beginPath(); ctx.ellipse(0, -19, 8, 7, 0, 0, TAU); ctx.fill();
+    } else {
+      for (const ex of [-17, 17]) { circ(ctx, ex, -38, 9, C.eye); circ(ctx, ex + f.facing * 2, -38, 4, C.pupil); }
+      ctx.strokeStyle = C.eye; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-12, -21); ctx.quadraticCurveTo(0, -17, 12, -21); ctx.stroke();
+    }
+    if (f.flash.head > 0) rr(ctx, -46, -72, 92, 74, 18, `rgba(255,255,255,${Math.min(1, f.flash.head * 4)})`);
+  });
+  ctx.save(); ctx.font = '700 12px "Chakra Petch", sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = ac;
+  ctx.fillText(TEAM[f.id].name, B.head.position.x, B.head.position.y - 50 * S - 26); ctx.restore();
+}
+function drawPopups(ctx) {
+  ctx.save(); ctx.font = '700 18px "Chakra Petch", sans-serif'; ctx.textAlign = 'center';
+  for (const p of popups) {
+    ctx.globalAlpha = 1 - p.t / 0.9; ctx.fillStyle = p.color;
+    ctx.fillText(p.text, p.x, p.y - p.t * 40);
+  }
+  ctx.restore();
+}
+const cam = { cx: W / 2, vw: W };
+function renderArena() {
+  const a = arena, ctx = a.ctx;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, a.canvas.width, a.canvas.height);
+  // 攝影機：視野寬度跟著兩人距離縮放（至少要裝得下 300 世界單位的高度），置中在兩人中點
+  const p1 = fighters.p1.B.torso.position, cpu = fighters.cpu.B.torso.position;
+  const minVw = Math.max(480, a.w * 300 / a.h);
+  cam.vw = lerp(cam.vw, clamp(Math.abs(p1.x - cpu.x) + 420, minVw, W), 0.08);
+  cam.cx = lerp(cam.cx, clamp((p1.x + cpu.x) / 2, cam.vw / 2, W - cam.vw / 2), 0.1);
+  const sc = a.w / cam.vw, sh = game.shake > 0 ? game.shake * 20 : 0;
+  ctx.setTransform(a.dpr * sc, 0, 0, a.dpr * sc, a.dpr * (a.w / 2 - cam.cx * sc + (sh ? rand(-sh, sh) : 0)), a.dpr * (a.h - 28 - GROUND * sc + (sh ? rand(-sh, sh) : 0)));
+  drawGround(ctx);
+  drawFighter(ctx, fighters.cpu); drawFighter(ctx, fighters.p1);
+  drawPopups(ctx);
+}
+
+/* ---------- 下方操作面板：P1 的節點方塊 ---------- */
+function padToWorld(px, py) { return { x: pad.cx + (px - pad.w / 2) / pad.scale, y: GROUND - (pad.h - PAD_BOTTOM - py) / pad.scale }; }
+function worldToPad(wx, wy) { return { x: pad.w / 2 + (wx - pad.cx) * pad.scale, y: pad.h - PAD_BOTTOM - (GROUND - wy) * pad.scale }; }
+function renderPad() {
+  const p = pad, ctx = p.ctx, f = fighters.p1, B = f.B, ac = TEAM.p1.accent;
+  ctx.setTransform(p.dpr, 0, 0, p.dpr, 0, 0); ctx.clearRect(0, 0, p.w, p.h);
+  const P = part => worldToPad(B[part].position.x, B[part].position.y);
+  const gy = worldToPad(0, GROUND).y;
+  ctx.strokeStyle = theme.ground; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(p.w, gy); ctx.stroke();
+
+  ctx.strokeStyle = theme.line; ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const chains = [['torso', 'head'], ['torso', 'upperL', 'foreL', 'handL'], ['torso', 'upperR', 'foreR', 'handR'],
+    ['torso', 'thighL', 'shinL', 'footL'], ['torso', 'thighR', 'shinR', 'footR']];
+  for (const ch of chains) {
+    ctx.beginPath();
+    ch.forEach((part, i) => { const q = P(part); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+    ctx.stroke();
+  }
+  for (const part of ['upperL', 'foreL', 'upperR', 'foreR', 'thighL', 'shinL', 'thighR', 'shinR']) { const q = P(part); circ(ctx, q.x, q.y, 5, theme.muted); }
+
+  ctx.font = '600 14px "Noto Sans TC", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const part of GRABBABLE) {
+    const q = P(part), [w, h] = NODE_SIZE[part], g = grabs.get('p1:' + part);
+    rr(ctx, q.x - w / 2, q.y - h / 2, w, h, 10, g ? ac : theme.bg);
+    ctx.strokeStyle = ac; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = g ? '#fff' : theme.fg; ctx.fillText(LABELS[part], q.x, q.y);
+  }
+  for (const pt of p.pointers.values()) {
+    const g = pt.g, alive = grabs.get(g.key) === g;
+    const col = !alive ? '#e04848' : g.strain > 0.7 ? '#e04848' : ac;
+    if (alive) {
+      const np = worldToPad(g.body.position.x + g.off.x, g.body.position.y + g.off.y);
+      if (Math.hypot(np.x - pt.x, np.y - pt.y) > 8) {
+        ctx.save(); ctx.setLineDash([6, 5]); ctx.strokeStyle = col; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(pt.x, pt.y); ctx.lineTo(np.x, np.y); ctx.stroke(); ctx.restore();
+      }
+    }
+    ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(pt.x, pt.y, 26, 0, TAU); ctx.stroke();
+    if (!alive) { ctx.fillStyle = col; ctx.font = '700 13px "Noto Sans TC", sans-serif'; ctx.fillText('重抓', pt.x, pt.y - 38); ctx.font = '600 14px "Noto Sans TC", sans-serif'; }
+  }
+  if (game.phase === 'ko') {
+    ctx.fillStyle = theme.muted; ctx.font = '600 15px "Noto Sans TC", sans-serif';
+    ctx.fillText('比賽結束，按「再來一場」', p.w / 2, 24);
+  }
+}
+function pickNode(px, py) {
+  let best = null, bestD = 1e9;
+  for (const part of GRABBABLE) {
+    if (grabs.has('p1:' + part)) continue;
+    const q = worldToPad(fighters.p1.B[part].position.x, fighters.p1.B[part].position.y), [w, h] = NODE_SIZE[part];
+    const dx = Math.abs(px - q.x), dy = Math.abs(py - q.y);
+    if (dx > w / 2 + 12 || dy > h / 2 + 12) continue;
+    const d = Math.max(dx / w, dy / h);
+    if (d < bestD) { bestD = d; best = part; }
+  }
+  return best;
+}
+function padPoint(e) { const r = pad.canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+pad.canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (game.phase === 'ko' || fighters.p1.ko) return;
+  const q = padPoint(e), part = pickNode(q.x, q.y);
+  if (!part) return;
+  const g = grab(fighters.p1, part, padToWorld(q.x, q.y), 'p1');
+  if (!g) return;
+  pad.pointers.set(e.pointerId, { g, x: q.x, y: q.y });
+  try { pad.canvas.setPointerCapture(e.pointerId); } catch (err) {}
+});
+pad.canvas.addEventListener('pointermove', e => {
+  const pt = pad.pointers.get(e.pointerId); if (!pt) return;
+  e.preventDefault();
+  const q = padPoint(e); pt.x = q.x; pt.y = q.y;
+  if (grabs.get(pt.g.key) === pt.g) setTarget(pt.g, padToWorld(q.x, q.y));
+});
+function endPointer(e) {
+  const pt = pad.pointers.get(e.pointerId); if (!pt) return;
+  release(pt.g, false); pad.pointers.delete(e.pointerId);
+}
+pad.canvas.addEventListener('pointerup', endPointer);
+pad.canvas.addEventListener('pointercancel', endPointer);
+pad.canvas.addEventListener('lostpointercapture', endPointer);
+pad.canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+/* ---------- 尺寸、主題、主迴圈 ---------- */
+function fit(c) {
+  const r = c.canvas.getBoundingClientRect();
+  c.w = Math.max(100, r.width); c.h = Math.max(100, r.height);
+  c.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  c.canvas.width = Math.round(c.w * c.dpr); c.canvas.height = Math.round(c.h * c.dpr);
+}
+function resize() {
+  fit(arena);
+  fit(pad); pad.scale = Math.min(pad.w / PAD_WORLD_W, (pad.h - PAD_BOTTOM - 12) / PAD_WORLD_H);
+  refreshTheme();
+}
+new ResizeObserver(resize).observe(arena.canvas);
+new ResizeObserver(resize).observe(pad.canvas);
+try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refreshTheme); } catch (e) {}
+new MutationObserver(refreshTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+let last = performance.now(), acc = 0, frames = 0, fpsT = 0, running = true;
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!running) { last = now; return; }
+  const d = Math.min(0.1, (now - last) / 1000); last = now; acc += d;
+  let steps = 0;
+  while (acc >= STEP && steps < 3) { stepSim(STEP); acc -= STEP; steps++; }
+  if (steps === 3) acc = 0;
+  renderArena(); renderPad();
+  hpP1.style.width = fighters.p1.hp + '%'; hpCpu.style.width = fighters.cpu.hp + '%';
+  frames++; fpsT += d;
+  if (fpsT >= 1) { fpsEl.textContent = 'FPS ' + Math.round(frames / fpsT); frames = 0; fpsT = 0; }
+}
+document.addEventListener('visibilitychange', () => { running = !document.hidden; last = performance.now(); acc = 0; });
+$('difficulty').addEventListener('change', e => { game.diff = e.target.value; });
+$('btnRestart').addEventListener('click', buildWorld);
+$('btnAgain').addEventListener('click', buildWorld);
+
+resize();
+buildWorld();
+requestAnimationFrame(frame);
+// 開發用：在 console 可以用 BOT01.game、BOT01.fighters() 看狀態，nodeScreen('handR') 取得面板節點的螢幕座標
+window.BOT01 = {
+  game, grabs, fighters: () => fighters, buildWorld,
+  nodeScreen: part => { const r = pad.canvas.getBoundingClientRect(), q = worldToPad(fighters.p1.B[part].position.x, fighters.p1.B[part].position.y); return { x: r.left + q.x, y: r.top + q.y }; },
+  worldScreen: (wx, wy) => { const r = pad.canvas.getBoundingClientRect(), q = worldToPad(wx, wy); return { x: r.left + q.x, y: r.top + q.y }; },
+};
+})();
+</script>
+</body>
+</html>
