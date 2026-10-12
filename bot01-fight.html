@@ -160,7 +160,8 @@ const W = 800, H = 400, GROUND = 360;        // 舞台世界座標
 const S = 0.8;                               // 角色相對原版 BOT-01 的縮放
 const STEP = 1 / 60, DT2 = (1000 / 60) ** 2; // 固定步長；force / torque 的換算以 1/60 秒為基準，和子步大小無關
 const SUB = 4, SDT = 1000 / 60 / SUB;        // 每影格跑 4 個物理子步：薄的部位（手掌、前臂）一子步最多移動 3，才擋得住對方的手
-const UP = 42, FORE = 40, THIGH = 40, SHIN = 38; // 上臂 / 前臂 / 大腿 / 小腿的樞軸間距（原版 34/32/34/32，加長了）；剛體長度 = 間距 + 2
+const UP = 50, FORE = 48, THIGH = 48, SHIN = 46; // 上臂 / 前臂 / 大腿 / 小腿的樞軸間距（原版 34/32/34/32，加長了）；剛體長度 = 間距 + 2
+const TS = 0.78, HS = 0.72;                  // 軀幹、頭相對原版的縮小比例（原版軀幹 90×100、頭 92×74）
 const REACH = 150;                           // 兩個軀幹中心相距多少時手剛好打得到
 const HIT_MIN = 3.5;                         // 相對速度（px/步）低於這個只算推擠不扣血
 const MAX_V = 12, MAX_AV = 0.3;              // 速度上限，避免拳頭穿過薄薄的前臂，也讓整體動作慢一點
@@ -202,30 +203,31 @@ const grabs = new Map();   // 'p1:handL' → grab
 // 尺寸沿用 bot01-rig.html：軀幹 90×100、頭 92×74、上臂 16×36（樞軸距 34）、前臂 14×34（距 32）、
 // 手 r11、大腿 20×36、小腿 16×34、腳 36×12。座標以軀幹中心為原點，髖部在 +50，脖子在 -54。
 function makeFighter(id, x, facing, group) {
-  const torsoY = GROUND - (THIGH + SHIN + 12 + 50) * S;
+  const torsoY = GROUND - (THIGH + SHIN + 12 + 50 * TS) * S;
   const opt = (part, extra) => Object.assign({ label: id + ':' + part, collisionFilter: { group }, friction: 0.3, frictionAir: 0.05, restitution: 0.05, density: 0.001 }, extra);
   const rect = (part, cx, cy, w, h, extra) => Bodies.rectangle(x + cx * S, torsoY + cy * S, w * S, h * S,
     opt(part, Object.assign({ chamfer: { radius: Math.min(w, h) * 0.3 * S } }, extra)));
   const B = {};
-  B.torso = rect('torso', 0, 0, 90, 100, { density: 0.0014, chamfer: { radius: 14 * S } });
-  B.head = rect('head', 0, -89, 92, 74, { density: 0.0007, chamfer: { radius: 16 * S } });
+  B.torso = rect('torso', 0, 0, 90 * TS, 100 * TS, { density: 0.0014 / (TS * TS), chamfer: { radius: 14 * TS * S } });   // 密度除以面積比，質量和原尺寸一樣，手腳才甩不動身體
+  B.head = rect('head', 0, -(54 * TS + 35 * HS), 92 * HS, 74 * HS, { density: 0.0007 / (HS * HS), chamfer: { radius: 16 * HS * S } });   // 脖子在 -54·TS，頭中心再往上 35·HS
   for (const [side, sx] of [['L', -1], ['R', 1]]) {
-    B['upper' + side] = rect('upper' + side, sx * 44, -36 + (UP + 2) / 2, 16, UP + 2);
-    B['fore' + side] = rect('fore' + side, sx * 44, -36 + UP + (FORE + 2) / 2, 14, FORE + 2);
-    B['hand' + side] = Bodies.circle(x + sx * 44 * S, torsoY + (-36 + UP + FORE + 4) * S, 11 * S, opt('hand' + side, { density: 0.002, friction: 0.5 }));
-    B['thigh' + side] = rect('thigh' + side, sx * 22, 50 + (THIGH + 2) / 2, 20, THIGH + 2);
-    B['shin' + side] = rect('shin' + side, sx * 22, 50 + THIGH + (SHIN + 2) / 2, 16, SHIN + 2);
-    B['foot' + side] = rect('foot' + side, sx * 22, 50 + THIGH + SHIN + 6, 36, 12, { density: 0.002, friction: 0.9 });
+    const shX = sx * 44 * TS, shY = -36 * TS, hpX = sx * 22 * TS, hpY = 50 * TS;   // 肩、髖在縮小後的軀幹上的位置
+    B['upper' + side] = rect('upper' + side, shX, shY + (UP + 2) / 2, 16, UP + 2);
+    B['fore' + side] = rect('fore' + side, shX, shY + UP + (FORE + 2) / 2, 14, FORE + 2);
+    B['hand' + side] = Bodies.circle(x + shX * S, torsoY + (shY + UP + FORE + 4) * S, 11 * S, opt('hand' + side, { density: 0.002, friction: 0.5 }));
+    B['thigh' + side] = rect('thigh' + side, hpX, hpY + (THIGH + 2) / 2, 20, THIGH + 2);
+    B['shin' + side] = rect('shin' + side, hpX, hpY + THIGH + (SHIN + 2) / 2, 16, SHIN + 2);
+    B['foot' + side] = rect('foot' + side, hpX, hpY + THIGH + SHIN + 6, 36, 12, { density: 0.002, friction: 0.9 });
   }
   const J = [];
   const pin = (a, ax, ay, b, bx, by, k = 0.8) => J.push(Constraint.create({
     bodyA: a, pointA: { x: ax * S, y: ay * S }, bodyB: b, pointB: { x: bx * S, y: by * S }, length: 0, stiffness: k, damping: 0.1 }));
-  pin(B.torso, -12, -54, B.head, -12, 35, 0.7); pin(B.torso, 12, -54, B.head, 12, 35, 0.7);   // 脖子兩點，頭才不會自轉
+  pin(B.torso, -10 * TS, -54 * TS, B.head, -10 * HS, 35 * HS, 0.7); pin(B.torso, 10 * TS, -54 * TS, B.head, 10 * HS, 35 * HS, 0.7);   // 脖子兩點，頭才不會自轉
   for (const [side, sx] of [['L', -1], ['R', 1]]) {
-    pin(B.torso, sx * 44, -36, B['upper' + side], 0, -(UP + 2) / 2);                    // 肩
+    pin(B.torso, sx * 44 * TS, -36 * TS, B['upper' + side], 0, -(UP + 2) / 2);          // 肩
     pin(B['upper' + side], 0, (UP - 2) / 2, B['fore' + side], 0, -(FORE + 2) / 2);      // 肘
     pin(B['fore' + side], 0, (FORE - 2) / 2, B['hand' + side], 0, -4);                  // 腕
-    pin(B.torso, sx * 22, 50, B['thigh' + side], 0, -(THIGH + 2) / 2);                  // 髖
+    pin(B.torso, sx * 22 * TS, 50 * TS, B['thigh' + side], 0, -(THIGH + 2) / 2);        // 髖
     pin(B['thigh' + side], 0, (THIGH - 2) / 2, B['shin' + side], 0, -(SHIN + 2) / 2);   // 膝
     pin(B['shin' + side], 0, (SHIN - 2) / 2, B['foot' + side], 0, -6);                  // 踝
   }
@@ -316,11 +318,12 @@ function setTarget(g, pt) {
     if (!g.lift) g.jumped = false;                                  // 回到線下才能再跳一次
     y = clamp(y, f.standY, f.standY + 45);                          // constraint 本身只能蹲，不能把自己吊起來
   } else if (part === 'head') {
-    x = clamp(x, t.x - 34, t.x + 34); y = clamp(y, t.y - 89 * S, t.y - 60 * S);   // 低頭、側傾，不能往上拉
+    const faceY = (54 * TS + 35 * HS) * S;                                            // 站直時頭中心離軀幹中心的高度
+    x = clamp(x, t.x - 30, t.x + 30); y = clamp(y, t.y - faceY, t.y - faceY + 23 * S);   // 低頭、側傾，不能往上拉
   } else {
     // 手腳只能在肩 / 髖的可及範圍內，所以拉不動身體，也不會把自己吊起來
     const side = part.endsWith('L') ? -1 : 1, hand = part.startsWith('hand');
-    const j = Vector.add(t, Vector.rotate({ x: side * (hand ? 44 : 22) * S, y: (hand ? -36 : 50) * S }, f.B.torso.angle));
+    const j = Vector.add(t, Vector.rotate({ x: side * (hand ? 44 : 22) * TS * S, y: (hand ? -36 : 50) * TS * S }, f.B.torso.angle));
     const reach = (hand ? UP + FORE + 2 : THIGH + SHIN + 4) * S;   // 略小於臂長 / 腿長，手腳到極限時不會持續拉身體
     const dx = x - j.x, dy = y - j.y, d = Math.hypot(dx, dy);
     if (d > reach) { x = j.x + dx / d * reach; y = j.y + dy / d * reach; }
@@ -543,7 +546,8 @@ class Brain {
   }
   holdGuard() {
     const me = this.me, f = me.facing, tp = me.B.torso.position, { front, back } = this.sides();
-    const wants = { ['hand' + front]: { x: tp.x + f * 44, y: tp.y - 64 }, ['hand' + back]: { x: tp.x + f * 20, y: tp.y - 30 } };
+    const faceY = (54 * TS + 35 * HS) * S;
+    const wants = { ['hand' + front]: { x: tp.x + f * 40, y: tp.y - faceY }, ['hand' + back]: { x: tp.x + f * 18, y: tp.y - faceY * 0.45 } };
     for (const part in wants) {
       if (!this.guardUp) { const g = grabs.get(me.id + ':' + part); if (g && g.owner === 'cpu') release(g); continue; }
       const g = this.wantGrab(part); if (g) setTarget(g, wants[part]);
@@ -551,7 +555,7 @@ class Brain {
   }
   duck() {
     const me = this.me, tp = me.B.torso.position;
-    const g = this.wantGrab('head'); if (g) setTarget(g, { x: tp.x - me.facing * 14, y: tp.y - 50 });
+    const g = this.wantGrab('head'); if (g) setTarget(g, { x: tp.x - me.facing * 14, y: tp.y - (54 * TS + 35 * HS) * S * 0.7 });
   }
   startAttack() {
     const { front, back } = this.sides(), r = Math.random();
@@ -674,7 +678,8 @@ function drawFighter(ctx, f) {
     withBody(ctx, B['foot' + side], 0, -6, () => { rr(ctx, -18, 0, 36, 12, 5, C.joint); rr(ctx, -18, 4, 36, 3, 1, ac); });
   };
   arm(back); leg(back); leg(front);
-  withBody(ctx, B.torso, 0, 50, () => {
+  withBody(ctx, B.torso, 0, 0, () => {
+    ctx.scale(TS, TS); ctx.translate(0, 50);          // 縮小後再用原版（以髖為原點）的座標畫
     rr(ctx, -10, -108, 20, 14, 4, C.joint);          // 脖子
     rr(ctx, -45, -100, 90, 100, 16, C.body);          // 軀幹
     rr(ctx, -30, -84, 60, 44, 8, C.visor);            // 胸口面板
@@ -685,7 +690,8 @@ function drawFighter(ctx, f) {
     if (f.flash.torso > 0) rr(ctx, -45, -100, 90, 100, 16, `rgba(255,255,255,${Math.min(1, f.flash.torso * 4)})`);
   });
   arm(front);
-  withBody(ctx, B.head, 0, 35, () => {
+  withBody(ctx, B.head, 0, 0, () => {
+    ctx.scale(HS, HS); ctx.translate(0, 35);          // 縮小後再用原版（以頭樞軸為原點）的座標畫
     rr(ctx, -2, -94, 4, 24, 2, C.joint); circ(ctx, 0, -96, 7, ac);   // 天線
     rr(ctx, -46, -72, 92, 74, 18, C.body);
     rr(ctx, -36, -58, 72, 46, 12, C.visor);
@@ -702,11 +708,11 @@ function drawFighter(ctx, f) {
     if (f.flash.head > 0) rr(ctx, -46, -72, 92, 74, 18, `rgba(255,255,255,${Math.min(1, f.flash.head * 4)})`);
   });
   ctx.save(); ctx.font = '700 12px "Chakra Petch", sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = ac;
-  ctx.fillText(TEAM[f.id].name, B.head.position.x, B.head.position.y - 50 * S - 26); ctx.restore();
+  ctx.fillText(TEAM[f.id].name, B.head.position.x, B.head.position.y - 50 * HS * S - 26); ctx.restore();
   if (bodyStunned(f)) {
     for (let i = 0; i < 3; i++) {
       const a = game.time * 7 + i * TAU / 3;
-      circ(ctx, B.head.position.x + Math.cos(a) * 18, B.head.position.y - 50 * S - 12 + Math.sin(a) * 5, 3, '#ffd166');
+      circ(ctx, B.head.position.x + Math.cos(a) * 18, B.head.position.y - 50 * HS * S - 12 + Math.sin(a) * 5, 3, '#ffd166');
     }
   }
 }
