@@ -42,7 +42,8 @@ h1{font-family:var(--font-display);font-size:22px;letter-spacing:.02em}
   select,button{font-size:13px;padding:4px 8px}
   .fps{display:none}
   /* 面板高度 = 視窗高度 − 舞台高度（寬度的 5/8）− 標題與控制列，讓腳的方塊一定在第一屏內 */
-  .pad{height:clamp(240px,calc(100dvh - (100vw - 32px) * 0.625 - 118px),460px)}
+  .pad{height:clamp(220px,calc(100dvh - (100vw - 32px) * 0.625 - 164px),460px)}
+  .macros .lbl{display:none} .slot .play{min-width:0} .slot .rec{padding-inline:7px}
 }
 .hud{position:absolute;top:8px;left:10px;right:10px;display:flex;align-items:center;gap:10px;font-family:var(--font-display);pointer-events:none}
 .hp{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
@@ -66,6 +67,10 @@ button.primary{background:var(--accent);color:var(--accent-ink);border-color:var
 button.ghost{background:transparent}
 .pad{display:block;width:100%;height:clamp(280px,48vh,460px);background:var(--surface);border:1px solid var(--line);border-radius:14px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .hint{margin:0;font-size:13px;color:var(--muted)}
+.macros{margin-top:8px;gap:6px 8px}
+.slot{display:flex} .slot .play{border-radius:8px 0 0 8px;min-width:88px} .slot .rec{border-radius:0 8px 8px 0;border-left:0;padding-inline:9px}
+.slot .play:disabled{opacity:.5;cursor:default} .slot .rec[aria-pressed="true"]{background:#e04848;color:#fff;border-color:#e04848}
+.slot .play[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .hint code{font-family:var(--font-mono);font-size:12px;background:var(--surface);padding:1px 5px;border-radius:4px}
 details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-size:13px}
 .doc{font-size:14px;color:var(--muted)} .doc li{margin-bottom:4px}
@@ -106,7 +111,13 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
 
   <section>
     <canvas id="pad" class="pad"></canvas>
-    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，把腰快速往上甩會蹬地跳起來，拖「頭」可以低頭閃；雙腳一起抬起來會跌坐在地上，放開腳就會站回來；手腳拖不出可及範圍，要打更遠就先拖腰靠近。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。方塊變紅並出現倒數弧就是硬直：打中或被擋下的那隻手腳會軟掉一下，被打中則全身短暫失控。</p>
+    <div class="row macros" id="macros">
+      <span class="hint lbl">招式</span>
+      <div class="slot"><button type="button" class="play" data-i="0">招式 1</button><button type="button" class="rec ghost" data-i="0">錄</button></div>
+      <div class="slot"><button type="button" class="play" data-i="1">招式 2</button><button type="button" class="rec ghost" data-i="1">錄</button></div>
+      <div class="slot"><button type="button" class="play" data-i="2">招式 3</button><button type="button" class="rec ghost" data-i="2">錄</button></div>
+    </div>
+    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，把腰快速往上甩會蹬地跳起來，拖「頭」可以低頭閃；雙腳一起抬起來會跌坐在地上，放開腳就會站回來；手腳拖不出可及範圍，要打更遠就先拖腰靠近。按「錄」再在面板上拖出一套動作（最長 2.5 秒，放開 0.5 秒後自動存檔），之後按「招式」就能一鍵使出，動作會依面向自動左右翻轉。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。方塊變紅並出現倒數弧就是硬直：打中或被擋下的那隻手腳會軟掉一下，被打中則全身短暫失控。</p>
   </section>
 </main>
 
@@ -118,6 +129,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
     <li><strong>操作</strong>：手指抓住節點時，建立一條「手指 → 剛體」的彈性 constraint，CPU 也是用同一套 API 下指令。節點被衝擊推離手指太遠就自動脫手，必須重抓。</li>
     <li><strong>命中</strong>：碰撞開始事件裡，只有「手或腳」打到「對方的頭或身體」且沿法線的相對速度夠快才扣血；慢慢推不算。對方的拳頭先碰到你的前臂就打不到頭，這就是格擋，但手臂會被推歪。</li>
     <li><strong>硬直</strong>：打中對方後那隻手腳軟掉 0.45 秒；被對方手腳擋下時攻擊方軟 0.4 秒、擋的那隻只軟 0.15 秒，所以防守方有反擊空檔；被打中的人全身失控 0.25 到 0.55 秒（看傷害），站位也不穩，但 0.8 秒內連續被打硬直減半，避免無限連段。硬直中的節點手指還抓著，只是拉不動，面板上會顯示倒數弧。</li>
+    <li><strong>預錄招式</strong>：錄製時每影格記下手指抓住的節點與目標位置（相對軀幹、依面向正規化，腰則相對起手位置），播放時用同一套抓取 API 重播，所以硬直、脫手、格擋都照常生效。三招存在瀏覽器的 localStorage。</li>
     <li><strong>CPU</strong>：狀態機（靠近 → 舉手防禦 → 出拳/踢 → 被打後縮頭或後退），難度決定出手間隔、出拳速度、舉手機率與脫手後重抓的反應時間。</li>
   </ul>
 </details>
@@ -148,7 +160,8 @@ const W = 800, H = 400, GROUND = 360;        // 舞台世界座標
 const S = 0.8;                               // 角色相對原版 BOT-01 的縮放
 const STEP = 1 / 60, DT2 = (1000 / 60) ** 2; // 固定步長；force / torque 的換算以 1/60 秒為基準，和子步大小無關
 const SUB = 4, SDT = 1000 / 60 / SUB;        // 每影格跑 4 個物理子步：薄的部位（手掌、前臂）一子步最多移動 3，才擋得住對方的手
-const REACH = 135;                           // 兩個軀幹中心相距多少時手剛好打得到
+const UP = 42, FORE = 40, THIGH = 40, SHIN = 38; // 上臂 / 前臂 / 大腿 / 小腿的樞軸間距（原版 34/32/34/32，加長了）；剛體長度 = 間距 + 2
+const REACH = 150;                           // 兩個軀幹中心相距多少時手剛好打得到
 const HIT_MIN = 3.5;                         // 相對速度（px/步）低於這個只算推擠不扣血
 const MAX_V = 12, MAX_AV = 0.3;              // 速度上限，避免拳頭穿過薄薄的前臂，也讓整體動作慢一點
 const BREAK = { head: 80, torso: 110, handL: 90, handR: 90, footL: 90, footR: 90 }; // 手指和節點差多遠就脫手
@@ -157,7 +170,7 @@ const JUMP = 4, JUMP_WINDOW = 28;            // 蹬地：力道是全身體重�
 // 受擊硬直 = hitBase + 傷害 × hitPerDmg（上限 hitMax），0.8 秒內連續被打則減半，避免無限連段
 const STUN = { attack: 0.45, block: 0.4, blocked: 0.15, hitBase: 0.25, hitPerDmg: 0.02, hitMax: 0.55 };
 const GRAB_STIFF = { head: 0.035, torso: 0.03 };                                    // 其他節點 0.08（每個子步各拉一次，等於每影格約 0.28）
-const PAD_WORLD_W = 320, PAD_WORLD_H = 270, PAD_BOTTOM = 44;   // PAD_BOTTOM：面板地面線離底邊的距離，腳的方塊才不會貼邊
+const PAD_WORLD_W = 320, PAD_WORLD_H = 300, PAD_BOTTOM = 44;   // PAD_BOTTOM：面板地面線離底邊的距離，腳的方塊才不會貼邊
 const C = { body: '#d6dde6', bodyDark: '#aab6c4', joint: '#3b4756', visor: '#202a36', eye: '#6ef2d8', pupil: '#0f2a2a', hand: '#8b97a6' };
 const TEAM = { p1: { name: 'P1', accent: '#e8890c' }, cpu: { name: 'CPU', accent: '#3b82f6' } };
 const GRABBABLE = ['head', 'torso', 'handL', 'handR', 'footL', 'footR'];
@@ -189,7 +202,7 @@ const grabs = new Map();   // 'p1:handL' → grab
 // 尺寸沿用 bot01-rig.html：軀幹 90×100、頭 92×74、上臂 16×36（樞軸距 34）、前臂 14×34（距 32）、
 // 手 r11、大腿 20×36、小腿 16×34、腳 36×12。座標以軀幹中心為原點，髖部在 +50，脖子在 -54。
 function makeFighter(id, x, facing, group) {
-  const torsoY = GROUND - 128 * S;
+  const torsoY = GROUND - (THIGH + SHIN + 12 + 50) * S;
   const opt = (part, extra) => Object.assign({ label: id + ':' + part, collisionFilter: { group }, friction: 0.3, frictionAir: 0.05, restitution: 0.05, density: 0.001 }, extra);
   const rect = (part, cx, cy, w, h, extra) => Bodies.rectangle(x + cx * S, torsoY + cy * S, w * S, h * S,
     opt(part, Object.assign({ chamfer: { radius: Math.min(w, h) * 0.3 * S } }, extra)));
@@ -197,24 +210,24 @@ function makeFighter(id, x, facing, group) {
   B.torso = rect('torso', 0, 0, 90, 100, { density: 0.0014, chamfer: { radius: 14 * S } });
   B.head = rect('head', 0, -89, 92, 74, { density: 0.0007, chamfer: { radius: 16 * S } });
   for (const [side, sx] of [['L', -1], ['R', 1]]) {
-    B['upper' + side] = rect('upper' + side, sx * 44, -36 + 18, 16, 36);
-    B['fore' + side] = rect('fore' + side, sx * 44, -36 + 34 + 17, 14, 34);
-    B['hand' + side] = Bodies.circle(x + sx * 44 * S, torsoY + (-36 + 34 + 32 + 4) * S, 11 * S, opt('hand' + side, { density: 0.002, friction: 0.5 }));
-    B['thigh' + side] = rect('thigh' + side, sx * 22, 50 + 18, 20, 36);
-    B['shin' + side] = rect('shin' + side, sx * 22, 50 + 34 + 17, 16, 34);
-    B['foot' + side] = rect('foot' + side, sx * 22, 50 + 34 + 32 + 6, 36, 12, { density: 0.002, friction: 0.9 });
+    B['upper' + side] = rect('upper' + side, sx * 44, -36 + (UP + 2) / 2, 16, UP + 2);
+    B['fore' + side] = rect('fore' + side, sx * 44, -36 + UP + (FORE + 2) / 2, 14, FORE + 2);
+    B['hand' + side] = Bodies.circle(x + sx * 44 * S, torsoY + (-36 + UP + FORE + 4) * S, 11 * S, opt('hand' + side, { density: 0.002, friction: 0.5 }));
+    B['thigh' + side] = rect('thigh' + side, sx * 22, 50 + (THIGH + 2) / 2, 20, THIGH + 2);
+    B['shin' + side] = rect('shin' + side, sx * 22, 50 + THIGH + (SHIN + 2) / 2, 16, SHIN + 2);
+    B['foot' + side] = rect('foot' + side, sx * 22, 50 + THIGH + SHIN + 6, 36, 12, { density: 0.002, friction: 0.9 });
   }
   const J = [];
   const pin = (a, ax, ay, b, bx, by, k = 0.8) => J.push(Constraint.create({
     bodyA: a, pointA: { x: ax * S, y: ay * S }, bodyB: b, pointB: { x: bx * S, y: by * S }, length: 0, stiffness: k, damping: 0.1 }));
   pin(B.torso, -12, -54, B.head, -12, 35, 0.7); pin(B.torso, 12, -54, B.head, 12, 35, 0.7);   // 脖子兩點，頭才不會自轉
   for (const [side, sx] of [['L', -1], ['R', 1]]) {
-    pin(B.torso, sx * 44, -36, B['upper' + side], 0, -18);   // 肩
-    pin(B['upper' + side], 0, 16, B['fore' + side], 0, -17); // 肘
-    pin(B['fore' + side], 0, 15, B['hand' + side], 0, -4);   // 腕
-    pin(B.torso, sx * 22, 50, B['thigh' + side], 0, -18);    // 髖
-    pin(B['thigh' + side], 0, 16, B['shin' + side], 0, -17); // 膝
-    pin(B['shin' + side], 0, 15, B['foot' + side], 0, -6);   // 踝
+    pin(B.torso, sx * 44, -36, B['upper' + side], 0, -(UP + 2) / 2);                    // 肩
+    pin(B['upper' + side], 0, (UP - 2) / 2, B['fore' + side], 0, -(FORE + 2) / 2);      // 肘
+    pin(B['fore' + side], 0, (FORE - 2) / 2, B['hand' + side], 0, -4);                  // 腕
+    pin(B.torso, sx * 22, 50, B['thigh' + side], 0, -(THIGH + 2) / 2);                  // 髖
+    pin(B['thigh' + side], 0, (THIGH - 2) / 2, B['shin' + side], 0, -(SHIN + 2) / 2);   // 膝
+    pin(B['shin' + side], 0, (SHIN - 2) / 2, B['foot' + side], 0, -6);                  // 踝
   }
   // 站姿：軀幹掉到 standY 以下時，腿會往上頂（見 balance），在空中就只剩重力。weight 是腿以外的部件每步被重力加的速度，換算到軀幹上
   const parts = Object.values(B);
@@ -308,7 +321,7 @@ function setTarget(g, pt) {
     // 手腳只能在肩 / 髖的可及範圍內，所以拉不動身體，也不會把自己吊起來
     const side = part.endsWith('L') ? -1 : 1, hand = part.startsWith('hand');
     const j = Vector.add(t, Vector.rotate({ x: side * (hand ? 44 : 22) * S, y: (hand ? -36 : 50) * S }, f.B.torso.angle));
-    const reach = (hand ? 68 : 70) * S;   // 略小於臂長 70S / 腿長 72S，手腳到極限時不會持續拉身體
+    const reach = (hand ? UP + FORE + 2 : THIGH + SHIN + 4) * S;   // 略小於臂長 / 腿長，手腳到極限時不會持續拉身體
     const dx = x - j.x, dy = y - j.y, d = Math.hypot(dx, dy);
     if (d > reach) { x = j.x + dx / d * reach; y = j.y + dy / d * reach; }
   }
@@ -339,6 +352,87 @@ function updateGrabs(dt) {
     if (g.part === 'torso') g.f.anchor.x = clampAnchorX(g.f, g.target.x);
   }
 }
+
+/* ---------- 預錄招式：錄 3 招，一鍵播放 ---------- */
+const MACRO_MAX = 2.5, MACRO_IDLE = 0.5;   // 一招最長幾秒；放開手指多久後自動結束錄製
+const macros = { slots: [null, null, null], rec: null, play: null };
+const macroBtns = Array.from(document.querySelectorAll('#macros .play')), recBtns = Array.from(document.querySelectorAll('#macros .rec'));
+// 相對座標：手腳頭相對目前軀幹位置，腰相對起手時的軀幹位置；x 乘上面向，播放時依當下面向翻回來
+function macroRel(f, part, pt, origin) { const o = part === 'torso' ? origin : f.B.torso.position; return [(pt.x - o.x) * f.facing, pt.y - o.y]; }
+function macroAbs(f, part, rel, origin) { const o = part === 'torso' ? origin : f.B.torso.position; return { x: o.x + rel[0] * f.facing, y: o.y + rel[1] }; }
+function saveMacros() { try { localStorage.setItem('bot01-fight-macros-v1', JSON.stringify(macros.slots)); } catch (e) {} }
+function loadMacros() {
+  try {
+    const v = JSON.parse(localStorage.getItem('bot01-fight-macros-v1') || 'null');
+    if (Array.isArray(v)) for (let i = 0; i < 3; i++) if (v[i] && v[i].tracks && v[i].dur > 0) macros.slots[i] = v[i];
+  } catch (e) {}
+}
+function startRecording(slot) { macroPlayStop(); macros.rec = { slot, t0: null, last: 0, tracks: {}, origin: null }; updateMacroUI(); }
+function stopRecording() {
+  const r = macros.rec; if (!r) return;
+  macros.rec = null;
+  const dur = r.t0 === null ? 0 : r.last - r.t0;
+  if (dur > 0.05 && Object.keys(r.tracks).length) { macros.slots[r.slot] = { dur, tracks: r.tracks }; saveMacros(); }
+  updateMacroUI();
+}
+function recordFrame() {   // 每影格：把手指正抓著的節點目標記下來（時間、相對位置）
+  const r = macros.rec; if (!r) return;
+  const f = fighters.p1; let any = false;
+  for (const pt of pad.pointers.values()) {
+    const g = pt.g; if (grabs.get(g.key) !== g) continue;
+    if (r.t0 === null) { r.t0 = game.time; r.origin = { x: f.B.torso.position.x, y: f.B.torso.position.y }; }
+    (r.tracks[g.part] ||= []).push([+(game.time - r.t0).toFixed(3), ...macroRel(f, g.part, g.target, r.origin).map(v => +v.toFixed(1))]);
+    any = true;
+  }
+  if (r.t0 === null) return;                      // 還沒按下第一根手指
+  if (any) r.last = game.time;
+  if (game.time - r.t0 >= MACRO_MAX || (!any && game.time - r.last >= MACRO_IDLE)) stopRecording();
+}
+function macroPlay(i) {
+  const clip = macros.slots[i]; if (!clip || !fighters || fighters.p1.ko || game.phase === 'ko') return;
+  macroPlayStop(); if (macros.rec) stopRecording();
+  const f = fighters.p1;
+  macros.play = { i, t0: game.time, clip, origin: { x: f.B.torso.position.x, y: f.B.torso.position.y }, idx: {}, grabs: {} };
+  updateMacroUI();
+}
+function macroPlayStop() {
+  const p = macros.play; if (!p) return;
+  for (const part in p.grabs) { const g = p.grabs[part]; if (grabs.get(g.key) === g) release(g); }
+  macros.play = null; updateMacroUI();
+}
+function playFrame() {   // 每影格：照錄下的軌跡下 setTarget，和手指走同一套抓取
+  const p = macros.play; if (!p) return;
+  const f = fighters.p1, t = game.time - p.t0;
+  if (t > p.clip.dur + 0.05 || f.ko) { macroPlayStop(); return; }
+  for (const part in p.clip.tracks) {
+    const tr = p.clip.tracks[part]; let i = p.idx[part] || 0;
+    while (i < tr.length - 1 && tr[i + 1][0] <= t) i++;
+    p.idx[part] = i;
+    const active = tr[i][0] <= t && t - tr[i][0] < 0.1;   // 最近 0.1 秒內有樣本 = 這個節點當時被按著
+    let g = p.grabs[part];
+    if (g && grabs.get(g.key) !== g) g = null;            // 被撞脫手了，下一影格會重抓
+    if (!active) { if (g) { release(g); delete p.grabs[part]; } continue; }
+    if (!g) { g = grab(f, part, f.B[part].position, 'macro'); if (!g) continue; p.grabs[part] = g; }
+    let rel = [tr[i][1], tr[i][2]];
+    if (i < tr.length - 1 && tr[i + 1][0] - tr[i][0] < 0.1) {
+      const u = (t - tr[i][0]) / (tr[i + 1][0] - tr[i][0]);
+      rel = [lerp(tr[i][1], tr[i + 1][1], u), lerp(tr[i][2], tr[i + 1][2], u)];
+    }
+    setTarget(g, macroAbs(f, part, rel, p.origin));
+  }
+}
+function updateMacroUI() {
+  macroBtns.forEach((b, i) => {
+    const clip = macros.slots[i];
+    const narrow = window.matchMedia('(max-width:600px)').matches;   // 手機上用短標籤，三個按鈕才排得進一行
+    b.textContent = narrow ? (clip ? `${i + 1}・${clip.dur.toFixed(1)}s` : `${i + 1}（空）`) : (clip ? `招式 ${i + 1}・${clip.dur.toFixed(1)}s` : `招式 ${i + 1}（空）`);
+    b.disabled = !clip; b.setAttribute('aria-pressed', macros.play && macros.play.i === i ? 'true' : 'false');
+  });
+  recBtns.forEach((b, i) => { const on = macros.rec && macros.rec.slot === i; b.textContent = on ? '停' : '錄'; b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+}
+macroBtns.forEach(b => b.addEventListener('click', () => macroPlay(+b.dataset.i)));
+recBtns.forEach(b => b.addEventListener('click', () => { const i = +b.dataset.i; if (macros.rec && macros.rec.slot === i) stopRecording(); else startRecording(i); }));
+loadMacros();
 
 /* ---------- 命中判定 ---------- */
 function onCollision(ev) {
@@ -502,13 +596,14 @@ function buildWorld() {
     Bodies.rectangle(-40, H / 2, 80, H * 4, { isStatic: true, label: 'wall' }),
     Bodies.rectangle(W + 40, H / 2, 80, H * 4, { isStatic: true, label: 'wall' }),
   ]);
-  grabs.clear(); pad.pointers.clear(); popups = [];
+  macros.play = null; macros.rec = null; grabs.clear(); pad.pointers.clear(); popups = [];
   fighters = { p1: makeFighter('p1', 250, 1, -1), cpu: makeFighter('cpu', 550, -1, -2) };
   brain = new Brain(fighters.cpu, fighters.p1);
   Events.on(engine, 'collisionStart', onCollision);
   game.phase = 'ready'; game.phaseT = 0; game.time = 0; game.shake = 0;
   pad.cx = 250; cam.cx = W / 2; cam.vw = W;
   banner.hidden = true; hudMid.textContent = 'READY';
+  updateMacroUI();
 }
 
 /* ---------- 模擬一步 ---------- */
@@ -523,6 +618,7 @@ function stepSim(dt) {
     f.anchor.x = clampAnchorX(f, lerp(f.anchor.x, f.B.torso.position.x, Math.min(1, 2.5 * dt)));
   }
   if (game.phase === 'fight') brain.update(dt);
+  playFrame(); recordFrame();
   updateGrabs(dt);
   // 物理子步：force 每次 Engine.update 後會被清掉，所以支撐力每個子步都要重算
   for (let i = 0; i < SUB; i++) {
@@ -568,13 +664,13 @@ function drawFighter(ctx, f) {
   const B = f.B, ac = TEAM[f.id].accent, front = f.facing === 1 ? 'R' : 'L', back = f.facing === 1 ? 'L' : 'R';
   ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(B.torso.position.x, GROUND + 2, 44, 7, 0, 0, TAU); ctx.fill();
   const arm = side => {
-    withBody(ctx, B['upper' + side], 0, -18, () => { rr(ctx, -8, 0, 16, 36, 6, C.bodyDark); circ(ctx, 0, 0, 9, C.joint); });
-    withBody(ctx, B['fore' + side], 0, -17, () => { rr(ctx, -7, 0, 14, 34, 6, C.body); circ(ctx, 0, 0, 8, C.joint); });
+    withBody(ctx, B['upper' + side], 0, -(UP + 2) / 2, () => { rr(ctx, -8, 0, 16, UP + 2, 6, C.bodyDark); circ(ctx, 0, 0, 9, C.joint); });
+    withBody(ctx, B['fore' + side], 0, -(FORE + 2) / 2, () => { rr(ctx, -7, 0, 14, FORE + 2, 6, C.body); circ(ctx, 0, 0, 8, C.joint); });
     withBody(ctx, B['hand' + side], 0, 0, () => { circ(ctx, 0, 0, 11, C.hand); circ(ctx, 0, 0, 6, ac); });
   };
   const leg = side => {
-    withBody(ctx, B['thigh' + side], 0, -18, () => { rr(ctx, -10, 0, 20, 36, 6, C.bodyDark); circ(ctx, 0, 0, 10, C.joint); });
-    withBody(ctx, B['shin' + side], 0, -17, () => { rr(ctx, -8, 0, 16, 34, 6, C.body); circ(ctx, 0, 0, 8, C.joint); });
+    withBody(ctx, B['thigh' + side], 0, -(THIGH + 2) / 2, () => { rr(ctx, -10, 0, 20, THIGH + 2, 6, C.bodyDark); circ(ctx, 0, 0, 10, C.joint); });
+    withBody(ctx, B['shin' + side], 0, -(SHIN + 2) / 2, () => { rr(ctx, -8, 0, 16, SHIN + 2, 6, C.body); circ(ctx, 0, 0, 8, C.joint); });
     withBody(ctx, B['foot' + side], 0, -6, () => { rr(ctx, -18, 0, 36, 12, 5, C.joint); rr(ctx, -18, 4, 36, 3, 1, ac); });
   };
   arm(back); leg(back); leg(front);
@@ -628,7 +724,7 @@ function renderArena() {
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, a.canvas.width, a.canvas.height);
   // 攝影機：視野寬度跟著兩人距離縮放（至少要裝得下 300 世界單位的高度），置中在兩人中點
   const p1 = fighters.p1.B.torso.position, cpu = fighters.cpu.B.torso.position;
-  const minVw = Math.max(480, a.w * 300 / a.h);
+  const minVw = Math.max(480, a.w * 330 / a.h);
   cam.vw = lerp(cam.vw, clamp(Math.abs(p1.x - cpu.x) + 420, minVw, W), 0.08);
   cam.cx = lerp(cam.cx, clamp((p1.x + cpu.x) / 2, cam.vw / 2, W - cam.vw / 2), 0.1);
   const sc = a.w / cam.vw, sh = game.shake > 0 ? game.shake * 20 : 0;
@@ -661,7 +757,7 @@ function renderPad() {
   ctx.font = '600 14px "Noto Sans TC", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (const part of GRABBABLE) {
     const q = P(part), [w, h] = NODE_SIZE[part], g = grabs.get('p1:' + part), st = stunInfo(f, part);
-    rr(ctx, q.x - w / 2, q.y - h / 2, w, h, 10, st ? '#7a3b3b' : g ? ac : theme.bg);
+    rr(ctx, q.x - w / 2, q.y - h / 2, w, h, 10, st ? '#7a3b3b' : g ? (g.owner === 'macro' ? '#b8731c' : ac) : theme.bg);
     ctx.strokeStyle = st ? '#e04848' : ac; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = (g || st) ? '#fff' : theme.fg; ctx.fillText(LABELS[part], q.x, q.y);
     if (st) {   // 硬直倒數弧：從滿圈慢慢消失
@@ -685,6 +781,15 @@ function renderPad() {
   if (game.phase === 'ko') {
     ctx.fillStyle = theme.muted; ctx.font = '600 15px "Noto Sans TC", sans-serif';
     ctx.fillText('比賽結束，按「再來一場」', p.w / 2, 24);
+  }
+  if (macros.rec) {
+    const r = macros.rec, left = r.t0 === null ? MACRO_MAX : Math.max(0, MACRO_MAX - (game.time - r.t0));
+    if (Math.floor(game.time * 2) % 2 === 0 || r.t0 !== null) circ(ctx, 18, 20, 6, '#e04848');
+    ctx.textAlign = 'left'; ctx.fillStyle = '#e04848'; ctx.font = '700 14px "Noto Sans TC", sans-serif';
+    ctx.fillText(r.t0 === null ? `錄製招式 ${r.slot + 1}：開始拖動作` : `錄製中 ${left.toFixed(1)}s`, 30, 20); ctx.textAlign = 'center';
+  } else if (macros.play) {
+    ctx.fillStyle = ac; ctx.font = '700 14px "Noto Sans TC", sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText(`招式 ${macros.play.i + 1} 使出中`, p.w - 14, 20); ctx.textAlign = 'center';
   }
 }
 function pickNode(px, py) {
@@ -735,7 +840,7 @@ function fit(c) {
 function resize() {
   fit(arena);
   fit(pad); pad.scale = Math.min(pad.w / PAD_WORLD_W, (pad.h - PAD_BOTTOM - 12) / PAD_WORLD_H);
-  refreshTheme();
+  refreshTheme(); if (typeof updateMacroUI === 'function' && fighters) updateMacroUI();
 }
 new ResizeObserver(resize).observe(arena.canvas);
 new ResizeObserver(resize).observe(pad.canvas);
@@ -766,7 +871,7 @@ buildWorld();
 requestAnimationFrame(frame);
 // 開發用：在 console 可以用 BOT01.game、BOT01.fighters() 看狀態，nodeScreen('handR') 取得面板節點的螢幕座標
 window.BOT01 = {
-  game, grabs, fighters: () => fighters, buildWorld,
+  game, grabs, fighters: () => fighters, buildWorld, macros, macroPlay,
   nodeScreen: part => { const r = pad.canvas.getBoundingClientRect(), q = worldToPad(fighters.p1.B[part].position.x, fighters.p1.B[part].position.y); return { x: r.left + q.x, y: r.top + q.y }; },
   worldScreen: (wx, wy) => { const r = pad.canvas.getBoundingClientRect(), q = worldToPad(wx, wy); return { x: r.left + q.x, y: r.top + q.y }; },
 };
