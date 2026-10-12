@@ -106,7 +106,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
 
   <section>
     <canvas id="pad" class="pad"></canvas>
-    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，把腰快速往上甩會蹬地跳起來，拖「頭」可以低頭閃；雙腳一起抬起來會跌坐在地上，放開腳就會站回來；手腳拖不出可及範圍，要打更遠就先拖腰靠近。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。</p>
+    <p class="hint" style="margin-top:8px">多指同時拖方塊，上方的 P1 會同步動作。拖「腰」可以前進後退或蹲下，把腰快速往上甩會蹬地跳起來，拖「頭」可以低頭閃；雙腳一起抬起來會跌坐在地上，放開腳就會站回來；手腳拖不出可及範圍，要打更遠就先拖腰靠近。被打中時方塊會被撞開：手指圈變紅表示快脫手，出現「重抓」就放開手指再抓一次。方塊變紅並出現倒數弧就是硬直：打中或被擋下的那隻手腳會軟掉一下，被打中則全身短暫失控。</p>
   </section>
 </main>
 
@@ -117,6 +117,7 @@ details{margin-top:14px} details summary{cursor:pointer;color:var(--muted);font-
     <li><strong>站立與重力</strong>：至少一腳踩在地上、而且軀幹掉到站姿高度以下時，腿才會往上頂住（抵銷重力的支撐力 + 彈簧 + 阻尼），再加扶正扭矩；雙腳一離地（或被打飛到站姿高度以上）就沒有任何支撐，純粹受重力落下。手腳的拖曳目標被限制在肩、髖可及的範圍內，腰只能蹲、頭只能低，所以拖曳不會把自己吊起來；把腰甩到站姿線以上時，只要腳還在地上就會蹬地跳起，離地後純粹是拋物線。面向會跟著對手的位置自動翻轉。</li>
     <li><strong>操作</strong>：手指抓住節點時，建立一條「手指 → 剛體」的彈性 constraint，CPU 也是用同一套 API 下指令。節點被衝擊推離手指太遠就自動脫手，必須重抓。</li>
     <li><strong>命中</strong>：碰撞開始事件裡，只有「手或腳」打到「對方的頭或身體」且沿法線的相對速度夠快才扣血；慢慢推不算。對方的拳頭先碰到你的前臂就打不到頭，這就是格擋，但手臂會被推歪。</li>
+    <li><strong>硬直</strong>：打中對方後那隻手腳軟掉 0.45 秒；被對方手腳擋下時攻擊方軟 0.4 秒、擋的那隻只軟 0.15 秒，所以防守方有反擊空檔；被打中的人全身失控 0.25 到 0.55 秒（看傷害），站位也不穩，但 0.8 秒內連續被打硬直減半，避免無限連段。硬直中的節點手指還抓著，只是拉不動，面板上會顯示倒數弧。</li>
     <li><strong>CPU</strong>：狀態機（靠近 → 舉手防禦 → 出拳/踢 → 被打後縮頭或後退），難度決定出手間隔、出拳速度、舉手機率與脫手後重抓的反應時間。</li>
   </ul>
 </details>
@@ -152,6 +153,9 @@ const HIT_MIN = 3.5;                         // 相對速度（px/步）低於�
 const MAX_V = 12, MAX_AV = 0.3;              // 速度上限，避免拳頭穿過薄薄的前臂，也讓整體動作慢一點
 const BREAK = { head: 80, torso: 110, handL: 90, handR: 90, footL: 90, footR: 90 }; // 手指和節點差多遠就脫手
 const JUMP = 4, JUMP_WINDOW = 28;            // 蹬地：力道是全身體重的幾倍、離開站姿高度多少以內還在蹬
+// 硬直（秒，模擬時間）：attack = 打中後那隻手腳軟掉；block = 被擋下的攻擊方；blocked = 擋下的那隻手腳；
+// 受擊硬直 = hitBase + 傷害 × hitPerDmg（上限 hitMax），0.8 秒內連續被打則減半，避免無限連段
+const STUN = { attack: 0.45, block: 0.4, blocked: 0.15, hitBase: 0.25, hitPerDmg: 0.02, hitMax: 0.55 };
 const GRAB_STIFF = { head: 0.035, torso: 0.03 };                                    // 其他節點 0.08（每個子步各拉一次，等於每影格約 0.28）
 const PAD_WORLD_W = 320, PAD_WORLD_H = 270, PAD_BOTTOM = 44;   // PAD_BOTTOM：面板地面線離底邊的距離，腳的方塊才不會貼邊
 const C = { body: '#d6dde6', bodyDark: '#aab6c4', joint: '#3b4756', visor: '#202a36', eye: '#6ef2d8', pupil: '#0f2a2a', hand: '#8b97a6' };
@@ -160,9 +164,9 @@ const GRABBABLE = ['head', 'torso', 'handL', 'handR', 'footL', 'footR'];
 const LABELS = { head: '頭', torso: '腰', handL: '左手', handR: '右手', footL: '左腳', footR: '右腳' };
 const NODE_SIZE = { head: [60, 52], torso: [72, 64], handL: [48, 48], handR: [48, 48], footL: [50, 44], footR: [50, 44] };
 const DIFFS = {
-  easy:   { interval: 2.2,  swing: 0.34, guard: 0.4,  speed: 45, react: 0.7 },
-  normal: { interval: 1.6,  swing: 0.22, guard: 0.7,  speed: 65, react: 0.4 },
-  hard:   { interval: 0.8,  swing: 0.15, guard: 0.95, speed: 90, react: 0.2 },
+  easy:   { interval: 2.4,  swing: 0.34, guard: 0.4,  speed: 45, react: 0.7 },
+  normal: { interval: 1.8,  swing: 0.22, guard: 0.7,  speed: 65, react: 0.4 },
+  hard:   { interval: 1.0,  swing: 0.15, guard: 0.95, speed: 90, react: 0.2 },
 };
 
 /* ---------- DOM ---------- */
@@ -178,7 +182,7 @@ function refreshTheme() {
 
 /* ---------- 遊戲狀態 ---------- */
 let engine, world, fighters, brain, popups = [];
-const game = { phase: 'ready', phaseT: 0, time: 0, diff: 'normal', shake: 0, speed: 0.75 };   // speed：模擬時間相對真實時間的倍率
+const game = { phase: 'ready', phaseT: 0, time: 0, diff: 'normal', shake: 0, speed: 0.75, stats: { hits: 0, blocks: 0 } };   // speed：模擬時間相對真實時間的倍率
 const grabs = new Map();   // 'p1:handL' → grab
 
 /* ---------- 角色：14 個剛體 + 關節 + 傀儡線 ---------- */
@@ -218,7 +222,7 @@ function makeFighter(id, x, facing, group) {
   const totalMass = parts.reduce((m, b) => m + b.mass, 0);
   const g = engine.gravity.y * engine.gravity.scale * DT2;
   const f = { id, facing, B, J, anchor: { x }, standY: torsoY, weight: g * (totalMass - legMass) / B.torso.mass, weightAll: g * totalMass / B.torso.mass,
-    hp: 100, ko: false, cool: {}, flash: { head: 0, torso: 0 }, hurt: 0, parts };
+    hp: 100, ko: false, cool: {}, flash: { head: 0, torso: 0 }, hurt: 0, parts, stun: { body: null, parts: {} }, lastHitT: -9 };
   Composite.add(world, [...parts, ...J]);
   return f;
 }
@@ -251,7 +255,7 @@ function balance(f) {
   if (dy > -1 && c > 0) {
     // 腿能出的力有上限（體重的 2.2 倍），所以被人壓住時頂不起對方，也不會彈射
     const ay = -clamp(f.weight + 0.12 * dy + 0.3 * v.y, -0.5 * f.weight, 2.2 * f.weight) * c;
-    const ax = -(0.03 * (p.x - f.anchor.x) + 0.2 * v.x) * c;
+    const ax = -(0.03 * (p.x - f.anchor.x) + 0.2 * v.x) * c * (bodyStunned(f) ? 0.25 : 1);   // 受擊硬直時站不穩，會被推得更遠
     t.force.x += ax * t.mass / DT2; t.force.y += ay * t.mass / DT2;
   }
   // 跳躍：腰被甩到站姿線以上、腳還踩在地上 → 開始蹬地；蹬到離站姿 JUMP_WINDOW 高之後就放手，純拋物線
@@ -264,6 +268,18 @@ function balance(f) {
   upright(t, 0.025, 0.25);
   for (const p of ['thighL', 'thighR', 'shinL', 'shinR']) upright(f.B[p], 0.008, 0.1);
 }
+
+/* ---------- 硬直 ---------- */
+// 某個節點的硬直 = 全身硬直和該節點硬直中較晚結束的那個；回傳剩餘秒數與剩餘比例（給面板畫倒數弧）
+function stunInfo(f, part) {
+  let best = null;
+  for (const st of [f.stun.body, f.stun.parts[part]]) if (st && st.until > game.time && (!best || st.until > best.until)) best = st;
+  return best ? { left: best.until - game.time, frac: (best.until - game.time) / best.dur } : null;
+}
+const stunLeft = (f, part) => { const i = stunInfo(f, part); return i ? i.left : 0; };
+const bodyStunned = f => !!(f.stun.body && f.stun.body.until > game.time);
+function stunPart(f, part, dur) { const cur = f.stun.parts[part]; if (!cur || cur.until < game.time + dur) f.stun.parts[part] = { until: game.time + dur, dur }; }
+function stunBody(f, dur) { const cur = f.stun.body; if (!cur || cur.until < game.time + dur) f.stun.body = { until: game.time + dur, dur }; }
 
 /* ---------- 抓取：手指和 CPU 共用 ---------- */
 // 抓住時記下「手指 − 剛體中心」的偏移，之後用手指位置減偏移當目標，按下去不會跳。
@@ -306,13 +322,16 @@ function release(g, lost) {
 function updateGrabs(dt) {
   for (const g of Array.from(grabs.values())) {
     if (g.f.ko) { release(g, true); continue; }
-    if (g.part === 'torso') {
+    let stiff = GRAB_STIFF[g.part] || 0.08, damp = 0.05;
+    if (g.part === 'torso' && g.body.position.y < g.f.standY - 1) {
       // 在空中（跳起或被打飛）時腰的 constraint 完全不拉，否則會像阻尼一樣把跳躍速度吃掉；落地再恢復
-      const air = g.body.position.y < g.f.standY - 1;
-      g.c.stiffness = air ? 0 : GRAB_STIFF.torso; g.c.damping = air ? 0 : 0.05;
-      if (air) g.target.y = g.body.position.y;
+      stiff = 0; damp = 0; g.target.y = g.body.position.y;
     }
+    const stunned = stunLeft(g.f, g.part) > 0;
+    if (stunned) { stiff = 0; damp = 0; }                 // 硬直：手指還抓著，但節點完全不聽使喚
+    g.c.stiffness = stiff; g.c.damping = damp;
     g.c.pointA.x = g.target.x; g.c.pointA.y = g.target.y;
+    if (stunned) { g.strain = 0; g.over = 0; continue; }  // 硬直中不算脫手，結束後再拉回手指的位置
     const d = Math.hypot(g.body.position.x - g.target.x, g.body.position.y - g.target.y);
     g.strain = d / BREAK[g.part];
     g.over = g.strain > 1 ? g.over + dt : 0;
@@ -329,16 +348,27 @@ function checkHit(a, b, pair) {
   if (game.phase !== 'fight') return;
   const la = a.label.split(':'), lb = b.label.split(':');
   if (la.length < 2 || lb.length < 2 || la[0] === lb[0]) return;
-  if (!/^(hand|foot)/.test(la[1]) || !/^(head|torso)$/.test(lb[1])) return;
+  if (!/^(hand|foot)/.test(la[1])) return;
+  const zone = /^(head|torso)$/.test(lb[1]) ? lb[1] : null;   // 打在頭身以外的部位 = 被對方的手腳擋下
   const striker = fighters[la[0]], victim = fighters[lb[0]];
   if (!striker || !victim || victim.ko || striker.ko) return;
   if ((striker.cool[la[1]] || 0) > game.time) return;
+  if (stunLeft(striker, la[1]) > 0) return;                   // 軟掉的手腳碰到人不算攻擊
   const n = pair.collision.normal;
   const va = Body.getVelocity(a), vb = Body.getVelocity(b);
   const rvx = va.x - vb.x, rvy = va.y - vb.y;
   const v = Math.abs(rvx * n.x + rvy * n.y);
   if (v < HIT_MIN) return;
   striker.cool[la[1]] = game.time + 0.3;
+  if (!zone) {
+    // 格擋：攻擊方那隻手腳硬直較長，擋下的那隻手腳硬直較短，防守方有反擊空檔
+    const side = lb[1].slice(-1), node = /^(upper|fore|hand)/.test(lb[1]) ? 'hand' + side : 'foot' + side;
+    stunPart(striker, la[1], STUN.block); stunPart(victim, node, STUN.blocked);
+    game.stats.blocks++;
+    popups.push({ x: b.position.x, y: b.position.y - 20, text: '格擋', t: 0, color: theme.muted });
+    return;
+  }
+  stunPart(striker, la[1], STUN.attack);                      // 打中了：這隻手腳要收招
   let dmg = (v - HIT_MIN) * 1.3;
   if (lb[1] === 'head') dmg *= 1.4;
   if (la[1].startsWith('foot')) dmg *= 1.2;
@@ -348,6 +378,10 @@ function checkHit(a, b, pair) {
 function applyHit(victim, zone, dmg, at, striker) {
   victim.hp = Math.max(0, victim.hp - dmg);
   victim.flash[zone] = 0.18; victim.hurt = 0.4;
+  // 受擊硬直：傷害越高越久；0.8 秒內連續被打則減半
+  let st = Math.min(STUN.hitMax, STUN.hitBase + dmg * STUN.hitPerDmg);
+  if (game.time - victim.lastHitT < 0.8) st *= 0.5;
+  victim.lastHitT = game.time; stunBody(victim, st); game.stats.hits++;
   popups.push({ x: at.x, y: at.y - 24, text: '-' + dmg, t: 0, color: TEAM[striker.id].accent });
   game.shake = Math.max(game.shake, Math.min(0.25, 0.06 + dmg * 0.006));
   if (victim.id === 'cpu') brain.onHit(); else brain.onLanded();
@@ -391,6 +425,7 @@ class Brain {
       for (const part of ['footL', 'footR']) { const g = grabs.get(me.id + ':' + part); if (g && g.owner === 'cpu') release(g); }
       this.state = 'guard'; this.next = Math.max(this.next, 0.5);
     }
+    if (bodyStunned(me)) { if (this.state === 'attack') this.endAttack(); return; }   // 受擊硬直：什麼都做不了
     let move = 0;
     if (this.state === 'retreat') move = -dir; else if (dist > REACH + 25) move = dir; else if (dist < REACH - 35) move = -dir;
     if (move) me.anchor.x = clampAnchorX(me, me.anchor.x + move * D.speed * dt);
@@ -426,7 +461,11 @@ class Brain {
   }
   startAttack() {
     const { front, back } = this.sides(), r = Math.random();
-    const part = r < 0.45 ? 'hand' + front : r < 0.72 ? 'hand' + back : 'foot' + front;
+    let part = r < 0.45 ? 'hand' + front : r < 0.72 ? 'hand' + back : 'foot' + front;
+    if (stunLeft(this.me, part) > 0) {                                   // 想用的手腳還在硬直，換一隻沒硬直的
+      part = ['hand' + front, 'hand' + back, 'foot' + front].find(p => stunLeft(this.me, p) <= 0);
+      if (!part) { this.next = 0.25; return; }
+    }
     const zone = Math.random() < 0.55 ? 'head' : 'torso';
     const g = this.wantGrab(part); if (!g) { this.next = 0.3; return; }
     const b = this.me.B[part].position;
@@ -568,6 +607,12 @@ function drawFighter(ctx, f) {
   });
   ctx.save(); ctx.font = '700 12px "Chakra Petch", sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = ac;
   ctx.fillText(TEAM[f.id].name, B.head.position.x, B.head.position.y - 50 * S - 26); ctx.restore();
+  if (bodyStunned(f)) {
+    for (let i = 0; i < 3; i++) {
+      const a = game.time * 7 + i * TAU / 3;
+      circ(ctx, B.head.position.x + Math.cos(a) * 18, B.head.position.y - 50 * S - 12 + Math.sin(a) * 5, 3, '#ffd166');
+    }
+  }
 }
 function drawPopups(ctx) {
   ctx.save(); ctx.font = '700 18px "Chakra Petch", sans-serif'; ctx.textAlign = 'center';
@@ -615,10 +660,14 @@ function renderPad() {
 
   ctx.font = '600 14px "Noto Sans TC", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (const part of GRABBABLE) {
-    const q = P(part), [w, h] = NODE_SIZE[part], g = grabs.get('p1:' + part);
-    rr(ctx, q.x - w / 2, q.y - h / 2, w, h, 10, g ? ac : theme.bg);
-    ctx.strokeStyle = ac; ctx.lineWidth = 2; ctx.stroke();
-    ctx.fillStyle = g ? '#fff' : theme.fg; ctx.fillText(LABELS[part], q.x, q.y);
+    const q = P(part), [w, h] = NODE_SIZE[part], g = grabs.get('p1:' + part), st = stunInfo(f, part);
+    rr(ctx, q.x - w / 2, q.y - h / 2, w, h, 10, st ? '#7a3b3b' : g ? ac : theme.bg);
+    ctx.strokeStyle = st ? '#e04848' : ac; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = (g || st) ? '#fff' : theme.fg; ctx.fillText(LABELS[part], q.x, q.y);
+    if (st) {   // 硬直倒數弧：從滿圈慢慢消失
+      ctx.beginPath(); ctx.strokeStyle = '#e04848'; ctx.lineWidth = 4;
+      ctx.arc(q.x, q.y, Math.min(w, h) / 2 + 7, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(st.frac, 0, 1)); ctx.stroke();
+    }
   }
   for (const pt of p.pointers.values()) {
     const g = pt.g, alive = grabs.get(g.key) === g;
