@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PixiJS 8-Bit Runner</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #wrap { position: relative; line-height: 0; }
+  #wrap canvas { display: block; image-rendering: pixelated; }
+  /* CRT 掃描線（按 C 切換） */
+  #crt {
+    position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(to bottom,
+      rgba(0,0,0,0) 0, rgba(0,0,0,0) var(--h, 2px),
+      rgba(0,0,0,.22) var(--h, 2px), rgba(0,0,0,.22) var(--p, 4px));
+    box-shadow: inset 0 0 80px rgba(0,0,0,.55);
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="crt"></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@8.6.6/dist/pixi.min.js"></script>
+<script>
+(async () => {
+  // ------------------------------------------------------------------
+  // 基本設定：以 256x144 的「虛擬解析度」繪製，再整數倍放大
+  // ------------------------------------------------------------------
+  const W = 256, H = 144, GROUND_Y = 120;
+  const SPEED = 1.5, GRAVITY = 0.25, JUMP_V = -4.6;
+
+  // 所有材質都用最近鄰取樣，保持像素銳利
+  PIXI.TextureSource.defaultOptions.scaleMode = 'nearest';
+
+  // NES 風格調色盤
+  const PAL = {
+    K: '#000000', W: '#fcfcfc', R: '#d82800', S: '#fcbcb0', U: '#0058f8',
+    Y: '#f8b800', B: '#7c3c00', g: '#58d854', G: '#00a800',
+  };
+
+  const makeCanvas = (w, h) => {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    return c;
+  };
+
+  // 由字元陣列產生像素圖材質（'.' 為透明）
+  function pixTex(rows) {
+    const h = rows.length, w = Math.max(...rows.map(r => r.length));
+    const c = makeCanvas(w, h), ctx = c.getContext('2d');
+    rows.forEach((row, y) => [...row].forEach((ch, x) => {
+      if (PAL[ch]) { ctx.fillStyle = PAL[ch]; ctx.fillRect(x, y, 1, 1); }
+    }));
+    return PIXI.Texture.from(c);
+  }
+
+  // 用函式逐像素繪製材質
+  function drawTex(w, h, fn) {
+    const c = makeCanvas(w, h), ctx = c.getContext('2d');
+    const px = (x, y, col) => { ctx.fillStyle = col; ctx.fillRect(x, y, 1, 1); };
+    fn(px, ctx);
+    return PIXI.Texture.from(c);
+  }
+
+  // ------------------------------------------------------------------
+  // 角色 / 物件像素圖
+  // ------------------------------------------------------------------
+  const HERO_TOP = [
+    '...KKKKK....',
+    '..KRRRRRKK..',
+    '.KRRRRWRRRK.',
+    '.KKKKKKKKKKK',
+    '.KSSSSSKSSK.',
+    '.KSSSSSKSSK.',
+    '.KSSSSSSSSK.',
+    '..KKSSSSKK..',
+    '.KUUKKKKUUK.',
+    'KUUUUYYUUUUK',
+    'KSKUUUUUUKSK',
+    '.KKBBBBBBKK.',
+  ];
+  const HERO_LEGS = {
+    stride: ['..KUUKKUUK..', '.KUUK..KUUK.', 'KBBK....KBBK', 'KKK......KKK'],
+    pass:   ['...KUUUUK...', '...KUUUK....', '...KBBBBK...', '...KKKKKK...'],
+    stride2:['..KUUKUUK...', '..KUUKKUUK..', '.KBBK.KBBK..', '.KKK..KKK...'],
+    jump:   ['.KUUKKKUUK..', '.KUUUK.KUUK.', '..KBBK..KBBK', '...KK....KK.'],
+  };
+  const heroRun = [
+    pixTex([...HERO_TOP, ...HERO_LEGS.stride]),
+    pixTex([...HERO_TOP, ...HERO_LEGS.pass]),
+    pixTex([...HERO_TOP, ...HERO_LEGS.stride2]),
+    pixTex([...HERO_TOP, ...HERO_LEGS.pass]),
+  ];
+  const heroJump = pixTex([...HERO_TOP, ...HERO_LEGS.jump]);
+
+  const COIN_FULL = ['..KKKK..', '.KYYYYK.', 'KYYWYYYK', 'KYYWYYYK', 'KYYWYYYK', 'KYYWYYYK', '.KYYYYK.', '..KKKK..'];
+  const COIN_MID  = ['...KK...', '..KYYK..', '..KWYK..', '..KWYK..', '..KWYK..', '..KWYK..', '..KYYK..', '...KK...'];
+  const COIN_THIN = ['...KK...', '...KK...', '...KK...', '...KK...', '...KK...', '...KK...', '...KK...', '...KK...'];
+  const coinFrames = [pixTex(COIN_FULL), pixTex(COIN_MID), pixTex(COIN_THIN), pixTex(COIN_MID)];
+
+  const SLIME_A = [
+    '.....KKKK.....',
+    '...KKggggKK...',
+    '..KgWgggggGK..',
+    '.KgWggggggGGK.',
+    '.KggKWgKWgGGK.',
+    'KgggKKgKKggGGK',
+    'KggggggggggGGK',
+    'KgggggggggGGGK',
+    '.KGGGGGGGGGGK.',
+    '..KKKKKKKKKK..',
+  ];
+  const SLIME_B = ['', SLIME_A[1], SLIME_A[2], SLIME_A[4], SLIME_A[5], SLIME_A[6], SLIME_A[7], SLIME_A[7], SLIME_A[8], SLIME_A[9]];
+  const slimeFrames = [pixTex(SLIME_A), pixTex(SLIME_B)];
+
+  // ------------------------------------------------------------------
+  // 背景材質（程序產生）
+  // ------------------------------------------------------------------
+  function makeSky() {
+    const bands = ['#0058f8', '#0078f8', '#3cbcfc', '#68c8fc', '#a4e4fc'];
+    const bandH = GROUND_Y / bands.length;
+    const bayer = [[0, 2], [3, 1]];
+    return drawTex(W, GROUND_Y, px => {
+      for (let y = 0; y < GROUND_Y; y++) {
+        const b = Math.min(bands.length - 1, Math.floor(y / bandH));
+        const local = y - b * bandH;
+        for (let x = 0; x < W; x++) {
+          let col = bands[b];
+          // 每條色帶底部 4 行用 Bayer 抖色過渡到下一色
+          if (b < bands.length - 1 && local >= bandH - 4) {
+            const k = local - (bandH - 4) + 1;
+            if (bayer[y % 2][x % 2] < k * 4 / 5) col = bands[b + 1];
+          }
+          px(x, y, col);
+        }
+      }
+    });
+  }
+
+  function makeSun() {
+    return drawTex(24, 24, px => {
+      for (let y = 0; y < 24; y++) for (let x = 0; x < 24; x++) {
+        const d = Math.hypot(x - 11.5, y - 11.5);
+        if (d < 8.5) px(x, y, '#fce4a0');
+        else if (d < 11) px(x, y, '#f8b800');
+      }
+    });
+  }
+
+  function makeClouds() {
+    const w = 192, h = 40;
+    const clouds = [
+      [[20, 22, 8], [30, 17, 10], [42, 21, 8], [51, 24, 5]],
+      [[108, 14, 6], [118, 10, 8], [130, 14, 6]],
+      [[158, 30, 5], [167, 26, 7], [177, 30, 5]],
+    ];
+    return drawTex(w, h, px => {
+      for (const cl of clouds) {
+        const baseY = Math.max(...cl.map(c => c[1])) + 3;
+        for (let y = 0; y <= baseY; y++) for (let x = 0; x < w; x++) {
+          if (!cl.some(([cx, cy, r]) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r)) continue;
+          px(x, y, y >= baseY - 2 ? '#bce0fc' : '#fcfcfc');
+        }
+      }
+    });
+  }
+
+  function makeMountains() {
+    const w = 160, h = 64;
+    const peaks = [[20, 40], [62, 58], [100, 46], [135, 54]];
+    const hAt = x => {
+      x = (x + w) % w;
+      let m = 0;
+      for (const [p, ph] of peaks) {
+        let d = Math.abs(x - p); d = Math.min(d, w - d);
+        m = Math.max(m, ph - d);
+      }
+      return m;
+    };
+    return drawTex(w, h, px => {
+      for (let x = 0; x < w; x++) {
+        const hx = hAt(x), top = h - hx;
+        const lit = hAt(x + 1) < hx; // 右坡朝向太陽
+        for (let y = top; y < h; y++) {
+          let col = lit ? '#9878f8' : '#6844fc';
+          if (hx > 44 && y < top + 4 + (x % 3 === 0 ? 1 : 0)) col = lit ? '#fcfcfc' : '#c4c4fc';
+          px(x, y, col);
+        }
+      }
+    });
+  }
+
+  function makeHills() {
+    const w = 128, h = 40;
+    const topAt = x => {
+      x = (x + w) % w;
+      const t = x / w * Math.PI * 2;
+      return h - Math.round(18 + 8 * Math.sin(t * 2) + 5 * Math.sin(t * 3 + 1));
+    };
+    return drawTex(w, h, px => {
+      for (let x = 0; x < w; x++) {
+        const top = topAt(x);
+        for (let y = top; y < h; y++) {
+          const edge = y === top || y < topAt(x - 1) || y < topAt(x + 1);
+          let col = edge ? '#000000' : y <= top + 2 ? '#58d854' : '#00a800';
+          if (!edge && y > top + 4 && (x * 7 + y * 13) % 23 === 0) col = '#005800';
+          px(x, y, col);
+        }
+      }
+    });
+  }
+
+  function makeGroundTile() {
+    return drawTex(16, 24, (px, ctx) => {
+      const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+      rect(0, 0, 16, 24, '#c84c0c');
+      rect(0, 0, 16, 1, '#000000');
+      rect(0, 1, 16, 3, '#58d854');
+      rect(0, 4, 16, 2, '#00a800');
+      [[2, 6], [3, 6], [3, 7], [8, 6], [12, 6], [13, 6], [13, 7]].forEach(([x, y]) => px(x, y, '#00a800'));
+      [[1, 1], [6, 2], [10, 1], [14, 2]].forEach(([x, y]) => px(x, y, '#b8f818'));
+      // 磚紋
+      rect(0, 14, 16, 1, '#7c3c00');
+      rect(0, 21, 16, 1, '#7c3c00');
+      rect(7, 8, 1, 6, '#7c3c00');
+      rect(15, 15, 1, 6, '#7c3c00');
+      rect(4, 22, 1, 2, '#7c3c00');
+      rect(0, 9, 7, 1, '#fc9838');
+      rect(8, 16, 7, 1, '#fc9838');
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // 3x5 像素字型
+  // ------------------------------------------------------------------
+  const FONT = {
+    '0': '111101101101111', '1': '010110010010111', '2': '111001111100111', '3': '111001111001111',
+    '4': '101101111001001', '5': '111100111001111', '6': '111100111101111', '7': '111001001001001',
+    '8': '111101111101111', '9': '111101111001111',
+    A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110',
+    E: '111100110100111', F: '111100110100100', G: '011100101101011', H: '101101111101101',
+    I: '111010010010111', J: '001001001101010', K: '101101110101101', L: '100100100100111',
+    M: '101111111101101', N: '110101101101101', O: '010101101101010', P: '110101110100100',
+    R: '110101110101101', S: '011100010001110', T: '111010010010010', U: '101101101101111',
+    V: '101101101101010', W: '101101111111101', X: '101101010101101', Y: '101101010010010',
+    ':': '000010000010000', '-': '000000111000000', '!': '010010010000010', '/': '001001010100100',
+  };
+  const glyphTex = {};
+  for (const [ch, bits] of Object.entries(FONT)) {
+    glyphTex[ch] = drawTex(3, 5, px => {
+      for (let i = 0; i < 15; i++) if (bits[i] === '1') px(i % 3, Math.floor(i / 3), '#ffffff');
+    });
+  }
+
+  class PixelText extends PIXI.Container {
+    constructor(str = '', color = 0xffffff) {
+      super();
+      this.color = color;
+      this.str = null;
+      this.setText(str);
+    }
+    setText(str) {
+      if (str === this.str) return;
+      this.str = str;
+      this.removeChildren().forEach(c => c.destroy());
+      for (const [ox, oy, tint] of [[1, 1, 0x000000], [0, 0, this.color]]) {
+        [...str.toUpperCase()].forEach((ch, i) => {
+          const t = glyphTex[ch];
+          if (!t) return;
+          const s = new PIXI.Sprite(t);
+          s.position.set(i * 4 + ox, oy);
+          s.tint = tint;
+          this.addChild(s);
+        });
+      }
+    }
+    get textWidth() { return this.str.length * 4 - 1; }
+  }
+
+  // ------------------------------------------------------------------
+  // 8-bit 音效（WebAudio 方波）
+  // ------------------------------------------------------------------
+  const sfx = {
+    ctx: null, muted: false,
+    init() {
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) this.ctx = new AC();
+      }
+      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    },
+    tone(type, f0, f1, dur, vol = 0.05, delay = 0) {
+      if (!this.ctx || this.muted) return;
+      const t = this.ctx.currentTime + delay;
+      const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(f0, t);
+      if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(this.ctx.destination);
+      o.start(t); o.stop(t + dur + 0.02);
+    },
+    jump()  { this.tone('square', 260, 620, 0.14); },
+    coin()  { this.tone('square', 988, 988, 0.06); this.tone('square', 1319, 1319, 0.2, 0.05, 0.06); },
+    stomp() { this.tone('square', 400, 80, 0.12, 0.06); },
+    hit()   { this.tone('sawtooth', 220, 55, 0.3, 0.06); },
+  };
+
+  // ------------------------------------------------------------------
+  // PixiJS 應用程式與場景
+  // ------------------------------------------------------------------
+  const app = new PIXI.Application();
+  await app.init({ width: W, height: H, background: '#000000', antialias: false, roundPixels: true, resolution: 1 });
+  const wrap = document.getElementById('wrap');
+  const crt = document.getElementById('crt');
+  wrap.prepend(app.canvas);
+
+  function fit() {
+    const s = Math.max(1, Math.floor(Math.min(innerWidth / W, innerHeight / H)));
+    app.renderer.resize(W * s, H * s);
+    app.stage.scale.set(s);
+    crt.style.setProperty('--p', s + 'px');
+    crt.style.setProperty('--h', s / 2 + 'px');
+  }
+  fit();
+  addEventListener('resize', fit);
+
+  const world = new PIXI.Container();
+  const hud = new PIXI.Container();
+  app.stage.addChild(world, hud);
+
+  const sky = new PIXI.Sprite(makeSky());
+  const sun = new PIXI.Sprite(makeSun());
+  sun.position.set(200, 12);
+  const clouds = new PIXI.TilingSprite({ texture: makeClouds(), width: W, height: 40 });
+  clouds.y = 6;
+  const mountains = new PIXI.TilingSprite({ texture: makeMountains(), width: W, height: 64 });
+  mountains.y = GROUND_Y - 64;
+  const hills = new PIXI.TilingSprite({ texture: makeHills(), width: W, height: 40 });
+  hills.y = GROUND_Y - 40;
+  const ground = new PIXI.TilingSprite({ texture: makeGroundTile(), width: W, height: H - GROUND_Y });
+  ground.y = GROUND_Y;
+
+  const entityLayer = new PIXI.Container();
+  const fxLayer = new PIXI.Container();
+  const heroSprite = new PIXI.Sprite(heroRun[0]);
+  heroSprite.anchor.set(0.5, 1);
+
+  world.addChild(sky, sun, clouds, mountains, hills, ground, entityLayer, heroSprite, fxLayer);
+
+  // HUD
+  const coinIcon = new PIXI.Sprite(coinFrames[0]);
+  coinIcon.position.set(4, 4);
+  const coinText = new PixelText('X000');
+  coinText.position.set(14, 6);
+  const distText = new PixelText('00000M');
+  distText.y = 6;
+  const titleText = new PixelText('PIXI 8-BIT RUN', 0xf8b800);
+  titleText.position.set(Math.round((W - titleText.textWidth) / 2), 22);
+  const demoText = new PixelText('DEMO - PRESS SPACE TO JUMP');
+  demoText.position.set(Math.round((W - demoText.textWidth) / 2), H - 10);
+  hud.addChild(coinIcon, coinText, distText, titleText, demoText);
+
+  // ------------------------------------------------------------------
+  // 遊戲狀態
+  // ------------------------------------------------------------------
+  const hero = { x: 56, y: GROUND_Y, vy: 0, onGround: true, invuln: 0, autoJump: false };
+  const coins = [], slimes = [], particles = [];
+  let frame = 0, camX = 0, dist = 0, coinCount = 0, shake = 0, spawnTimer = 40;
+  let idle = 99999, jumpBuffer = 0, jumpHeld = false;
+
+  function addCoin(x, y) {
+    const sprite = new PIXI.Sprite(coinFrames[0]);
+    sprite.anchor.set(0.5);
+    entityLayer.addChild(sprite);
+    coins.push({ x, y, phase: Math.floor(Math.random() * 60), sprite });
+  }
+
+  function addSlime(x) {
+    const sprite = new PIXI.Sprite(slimeFrames[0]);
+    sprite.anchor.set(0.5, 1);
+    entityLayer.addChild(sprite);
+    slimes.push({ x, y: GROUND_Y, sprite });
+  }
+
+  function spawnPattern() {
+    const x0 = W + 16, r = Math.random();
+    if (r < 0.4) {
+      addSlime(x0);
+      if (Math.random() < 0.5) for (let i = 0; i < 3; i++) addCoin(x0 - 12 + i * 12, GROUND_Y - 34 - (i === 1 ? 6 : 0));
+    } else if (r < 0.7) {
+      for (let i = 0; i < 5; i++) addCoin(x0 + i * 12, GROUND_Y - 12 - Math.round(Math.sin(i / 4 * Math.PI) * 28));
+    } else {
+      for (let i = 0; i < 4; i++) addCoin(x0 + i * 12, GROUND_Y - 8);
+    }
+    spawnTimer = 70 + Math.random() * 50;
+  }
+
+  function particle(x, y, vx, vy, color, life, g = 0.15) {
+    const s = new PIXI.Sprite(PIXI.Texture.WHITE);
+    s.width = 1; s.height = 1; s.tint = color;
+    fxLayer.addChild(s);
+    particles.push({ s, x, y, vx, vy, life, g });
+  }
+
+  function burst(x, y, colors, n, speed) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, v = speed * (0.4 + Math.random() * 0.6);
+      particle(x, y, Math.cos(a) * v, Math.sin(a) * v - 1, colors[i % colors.length], 20 + Math.random() * 20);
+    }
+  }
+
+  const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  const removeAt = (arr, i) => { arr[i].sprite.destroy(); arr.splice(i, 1); };
+
+  // ------------------------------------------------------------------
+  // 輸入
+  // ------------------------------------------------------------------
+  const JUMP_KEYS = ['Space', 'ArrowUp', 'KeyW', 'KeyZ'];
+  function press() { sfx.init(); idle = 0; jumpBuffer = 6; jumpHeld = true; }
+  function release() { jumpHeld = false; }
+  addEventListener('keydown', e => {
+    if (JUMP_KEYS.includes(e.code)) { e.preventDefault(); if (!e.repeat) press(); }
+    else if (e.code === 'KeyM') sfx.muted = !sfx.muted;
+    else if (e.code === 'KeyC') crt.hidden = !crt.hidden;
+  });
+  addEventListener('keyup', e => { if (JUMP_KEYS.includes(e.code)) release(); });
+  addEventListener('pointerdown', press);
+  addEventListener('pointerup', release);
+
+  // ------------------------------------------------------------------
+  // 每一格（固定 60 FPS）的邏輯
+  // ------------------------------------------------------------------
+  function step() {
+    frame++; idle++;
+    camX += SPEED; dist += SPEED;
+    const auto = idle > 360; // 6 秒沒操作就進入自動示範
+
+    // 自動示範：看到史萊姆或空中金幣就跳
+    if (auto && hero.onGround) {
+      const seeSlime = slimes.some(s => { const d = s.x - hero.x; return d > 22 && d < 32; });
+      const seeCoin = coins.some(c => { const d = c.x - hero.x; return c.y < GROUND_Y - 22 && d > 24 && d < 30; });
+      if (seeSlime || seeCoin) { jumpBuffer = 1; hero.autoJump = true; }
+    }
+
+    // 跳躍
+    if (jumpBuffer > 0) jumpBuffer--;
+    if (jumpBuffer > 0 && hero.onGround) {
+      hero.vy = JUMP_V; hero.onGround = false; jumpBuffer = 0;
+      hero.autoJump = auto;
+      sfx.jump();
+    }
+    // 放開按鍵可提早落下（可變跳躍高度）
+    if (!hero.onGround && !hero.autoJump && !jumpHeld && hero.vy < -2) hero.vy = -2;
+
+    if (!hero.onGround) {
+      hero.vy += GRAVITY;
+      hero.y += hero.vy;
+      if (hero.y >= GROUND_Y) {
+        hero.y = GROUND_Y; hero.vy = 0; hero.onGround = true;
+        for (let i = 0; i < 6; i++) particle(hero.x + (i < 3 ? -4 : 4), GROUND_Y - 1, (i < 3 ? -1 : 1) * (0.3 + Math.random() * 0.6), -Math.random() * 0.8, 0xfcfcfc, 14, 0.05);
+      }
+    }
+    if (hero.invuln > 0) hero.invuln--;
+
+    // 生成
+    if (--spawnTimer <= 0) spawnPattern();
+
+    const heroBox = { x: hero.x - 5, y: hero.y - 15, w: 10, h: 15 };
+
+    // 金幣
+    for (let i = coins.length - 1; i >= 0; i--) {
+      const c = coins[i];
+      c.x -= SPEED;
+      c.sprite.x = Math.round(c.x);
+      c.sprite.y = Math.round(c.y + Math.sin((frame + c.phase) / 10));
+      c.sprite.texture = coinFrames[Math.floor((frame + c.phase) / 6) % 4];
+      if (c.x < -10) { removeAt(coins, i); continue; }
+      if (overlap(heroBox, { x: c.x - 4, y: c.y - 4, w: 8, h: 8 })) {
+        coinCount++;
+        burst(c.x, c.y, [0xf8b800, 0xfcfcfc], 8, 1.6);
+        sfx.coin();
+        removeAt(coins, i);
+      }
+    }
+
+    // 史萊姆
+    for (let i = slimes.length - 1; i >= 0; i--) {
+      const s = slimes[i];
+      s.x -= SPEED + 0.5;
+      s.sprite.x = Math.round(s.x);
+      s.sprite.y = s.y;
+      s.sprite.texture = slimeFrames[Math.floor(frame / 12) % 2];
+      if (s.x < -16) { removeAt(slimes, i); continue; }
+      if (!overlap(heroBox, { x: s.x - 6, y: s.y - 9, w: 12, h: 9 })) continue;
+
+      if (hero.vy > 0 && hero.y - (s.y - 9) < 6) {
+        // 踩扁！
+        burst(s.x, s.y - 4, [0x58d854, 0x00a800, 0xfcfcfc], 14, 2);
+        hero.vy = -3.6; hero.autoJump = true;
+        coinCount++;
+        shake = 4;
+        sfx.stomp();
+        removeAt(slimes, i);
+      } else if (hero.invuln === 0) {
+        // 被撞：掉 3 枚金幣
+        const lost = Math.min(3, coinCount);
+        coinCount -= lost;
+        burst(hero.x, hero.y - 8, [0xf8b800], lost * 4, 2.5);
+        hero.invuln = 90; hero.vy = -2.5; hero.onGround = false; hero.autoJump = true;
+        shake = 10;
+        sfx.hit();
+      }
+    }
+
+    // 粒子
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.vy += p.g; p.x += p.vx; p.y += p.vy; p.life--;
+      p.s.position.set(Math.round(p.x), Math.round(p.y));
+      if (p.life <= 0) { p.s.destroy(); particles.splice(i, 1); }
+    }
+
+    // 主角
+    const runIdx = Math.floor(frame / 5) % 4;
+    heroSprite.texture = hero.onGround ? heroRun[runIdx] : heroJump;
+    heroSprite.position.set(Math.round(hero.x), Math.round(hero.y) - (hero.onGround && runIdx % 2 ? 1 : 0));
+    heroSprite.visible = hero.invuln === 0 || frame % 6 < 3;
+
+    // 視差捲動
+    clouds.tilePosition.x = -Math.round(camX * 0.15 + frame * 0.05);
+    mountains.tilePosition.x = -Math.round(camX * 0.3);
+    hills.tilePosition.x = -Math.round(camX * 0.6);
+    ground.tilePosition.x = -Math.round(camX);
+
+    // 畫面震動
+    if (shake > 0) {
+      shake--;
+      world.position.set(Math.round(Math.random() * 4 - 2), Math.round(Math.random() * 4 - 2));
+    } else world.position.set(0, 0);
+
+    // HUD
+    coinIcon.texture = coinFrames[Math.floor(frame / 8) % 4];
+    coinText.setText('X' + String(coinCount).padStart(3, '0'));
+    distText.setText(String(Math.floor(dist / 16)).padStart(5, '0') + 'M');
+    distText.x = W - 4 - distText.textWidth;
+    titleText.visible = auto;
+    demoText.visible = auto && frame % 60 < 40;
+  }
+
+  let acc = 0;
+  const STEP_MS = 1000 / 60;
+  app.ticker.add(t => {
+    acc += Math.min(t.deltaMS, 100);
+    while (acc >= STEP_MS) { step(); acc -= STEP_MS; }
+  });
+})();
+</script>
+</body>
+</html>

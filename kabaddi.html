@@ -1,0 +1,1362 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>PixiJS 8-Bit Kabaddi</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, "Microsoft JhengHei", sans-serif; }
+  #wrap { position: relative; line-height: 0; }
+  #wrap canvas { display: block; image-rendering: pixelated; }
+  /* CRT 掃描線（按 G 切換） */
+  #crt {
+    position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(to bottom,
+      rgba(0,0,0,0) 0, rgba(0,0,0,0) var(--h, 2px),
+      rgba(0,0,0,.22) var(--h, 2px), rgba(0,0,0,.22) var(--p, 4px));
+    box-shadow: inset 0 0 80px rgba(0,0,0,.55);
+  }
+  #help { color: #8a8a8a; font-size: 12px; line-height: 1.6; padding: 4px 8px; text-align: center; }
+  #help b { color: #f8b800; font-weight: normal; }
+  #help .a { color: #f85838; }
+  #help .d { color: #3cbcfc; }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="crt"></div></div>
+<div id="help">
+  方向鍵 / WASD 移動　<b>Z X C V</b>（或 J K L ;）出招　被抓住時<b>連打</b>動作鍵掙扎回中線　M 靜音　G 掃描線　Esc 回標題<br>
+  <span class="a">攻：TOUCH 手觸 · KICK 腳踢 · JUMP 飛躍 · DUCK 潛身</span>
+  <span class="d">守：ANKLE 抓踝 · WAIST 抱腰 · ARM 鎖臂 · CHAIN 人鏈</span>　每招剋兩招、被兩招剋
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@8.6.6/dist/pixi.min.js"></script>
+<script>
+(async () => {
+  // ------------------------------------------------------------------
+  // 基本設定：320x180 虛擬解析度（上 144 為球場、下 36 為按鈕面板）
+  // ------------------------------------------------------------------
+  const W = 320, H = 180, PANEL_Y = 144;
+  // 熱血躲避球式的斜俯視球場：z 為縱深（0 = 遠端），越近越寬
+  const CT = 74, DEPTH = 62, HALF = 140, BAULK = 78, BONUS = 100;
+  const N = 5, WIN_SCORE = 12, RAID_T = 600;
+  const scaleZ = z => 0.8 + 0.2 * z / DEPTH;
+  const SX = (x, z) => 160 + x * scaleZ(z);
+  const SY = z => CT + z;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+  PIXI.TextureSource.defaultOptions.scaleMode = 'nearest';
+
+  const makeCanvas = (w, h) => {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    return c;
+  };
+
+  // 用函式逐像素繪製材質
+  function drawTex(w, h, fn) {
+    const c = makeCanvas(w, h), ctx = c.getContext('2d');
+    const px = (x, y, col) => { ctx.fillStyle = col; ctx.fillRect(x, y, 1, 1); };
+    fn(px, ctx);
+    return PIXI.Texture.from(c);
+  }
+
+  // ------------------------------------------------------------------
+  // 動作與相剋表
+  //   s = 起手格數、a = 判定格數、r = 收招格數、reach = 判定距離
+  //   每招攻擊剋兩招防守，也被另外兩招防守剋制
+  // ------------------------------------------------------------------
+  const ATK_ACTS = ['TOUCH', 'KICK', 'JUMP', 'DUCK'];
+  const DEF_ACTS = ['ANKLE', 'WAIST', 'ARM', 'CHAIN'];
+  const ACT = {
+    TOUCH: { s: 10, a: 6,  r: 10, reach: 15 },
+    KICK:  { s: 16, a: 8,  r: 14, reach: 22 },
+    JUMP:  { s: 8,  a: 22, r: 8,  reach: 12 },
+    DUCK:  { s: 8,  a: 14, r: 10, reach: 12 },
+    ANKLE: { s: 7,  a: 8,  r: 30, reach: 15 },
+    WAIST: { s: 9,  a: 8,  r: 24, reach: 16 },
+    ARM:   { s: 5,  a: 7,  r: 22, reach: 13 },
+    CHAIN: { s: 12, a: 12, r: 28, reach: 20 },
+  };
+  // 判定期間的位移速度
+  const LUNGE = { TOUCH: 1.0, JUMP: 1.6, DUCK: 1.9, ANKLE: 1.5, WAIST: 1.3, ARM: 0.6, CHAIN: 0.9 };
+  const lungeDist = a => (LUNGE[a] || 0) * ACT[a].a;
+  // 防守招式 → 能抓住的攻擊招式
+  const CATCH = {
+    ANKLE: ['KICK', 'DUCK'],   // 抓踝：抓住伸出的腳、壓低的身體
+    WAIST: ['TOUCH', 'JUMP'],  // 抱腰：抱住伸手的、落地的
+    ARM:   ['TOUCH', 'DUCK'],  // 鎖臂：扣住手、往下壓住潛身
+    CHAIN: ['KICK', 'JUMP'],   // 人鏈：夾住腳、封住落點
+  };
+  const atkBeats = atk => DEF_ACTS.filter(d => !CATCH[d].includes(atk));
+
+  // ------------------------------------------------------------------
+  // 角色像素圖（程序產生：關節座標 → 粗線條 + 黑描邊）
+  // 畫布 32x29，面向右，腳底在第 27 行
+  // ------------------------------------------------------------------
+  const POSES = {
+    stand:     { hd: [12, 3],  to: [13, 10], hip: [16, 16], bf: [13, 27], ff: [19, 27], bh: [13, 19], fh: [19, 19] },
+    stance:    { hd: [13, 7],  to: [13, 14], hip: [16, 20], bf: [11, 27], ff: [21, 27], bh: [20, 19], fh: [24, 17] },
+    walk:      { hd: [13, 6],  to: [13, 13], hip: [16, 19], bf: [8, 27],  ff: [23, 27], bh: [19, 18], fh: [23, 16] },
+    touchPrep: { hd: [11, 7],  to: [12, 14], hip: [15, 20], bf: [10, 27], ff: [20, 27], bh: [18, 19], fh: [8, 16] },
+    touch:     { hd: [17, 8],  to: [15, 14], hip: [16, 20], bf: [8, 27],  ff: [24, 27], bh: [12, 19], fh: [30, 13] },
+    kickPrep:  { hd: [11, 5],  to: [12, 12], hip: [15, 18], bf: [14, 27], ff: [21, 21], bh: [8, 14],  fh: [20, 13] },
+    kick:      { hd: [7, 8],   to: [10, 14], hip: [14, 20], bf: [12, 27], ff: [30, 18], bh: [5, 12],  fh: [17, 12] },
+    crouch:    { hd: [14, 11], to: [13, 18], th: 5, hip: [15, 22], bf: [9, 27], ff: [21, 27], bh: [19, 23], fh: [23, 21] },
+    jump:      { hd: [13, 2],  to: [13, 9],  hip: [16, 15], bf: [11, 22], ff: [21, 20], bh: [9, 3],   fh: [23, 4] },
+    duckPrep:  { hd: [17, 10], to: [13, 16], hip: [14, 21], bf: [8, 27],  ff: [20, 27], bh: [22, 22], fh: [25, 20] },
+    duck:      { hd: [20, 13], to: [12, 17], tw: 9, th: 5, sh: [18, 18], hip: [12, 21], bf: [4, 27], ff: [17, 27], bh: [24, 24], fh: [28, 22] },
+    ankle:     { hd: [22, 16], to: [11, 19], tw: 10, th: 5, sh: [19, 20], hip: [10, 22], bf: [1, 26], ff: [4, 27], bh: [28, 25], fh: [30, 27] },
+    waist:     { hd: [17, 6],  to: [15, 13], hip: [15, 19], bf: [7, 27],  ff: [22, 27], bh: [27, 15], fh: [30, 12] },
+    armPrep:   { hd: [12, 4],  to: [13, 11], hip: [16, 17], bf: [11, 27], ff: [20, 27], bh: [17, 3],  fh: [21, 5] },
+    arm:       { hd: [14, 4],  to: [13, 11], hip: [15, 17], bf: [10, 27], ff: [21, 27], bh: [24, 4],  fh: [28, 7] },
+    chain:     { hd: [13, 7],  to: [13, 14], hip: [16, 20], bf: [9, 27],  ff: [23, 27], bh: [2, 14],  fh: [30, 14] },
+    stun:      { hd: [13, 5],  to: [13, 12], hip: [16, 18], bf: [12, 27], ff: [20, 27], bh: [7, 5],   fh: [25, 6] },
+    caught:    { hd: [11, 6],  to: [13, 13], hip: [16, 19], bf: [9, 27],  ff: [23, 25], bh: [5, 9],   fh: [27, 8] },
+    grab:      { hd: [18, 9],  to: [15, 15], hip: [15, 21], bf: [6, 27],  ff: [21, 27], bh: [27, 16], fh: [30, 13] },
+    down:      { hd: [21, 20], to: [11, 22], tw: 10, th: 5, sh: [19, 23], hip: [10, 23], bf: [1, 27], ff: [2, 25], bh: [16, 19], fh: [24, 27] },
+    sit:       { hd: [12, 11], to: [13, 18], th: 5, hip: [16, 23], bf: [23, 27], ff: [25, 27], bh: [12, 24], fh: [20, 24] },
+    cheer:     { hd: [12, 3],  to: [13, 10], hip: [16, 16], bf: [12, 27], ff: [20, 27], bh: [10, 0],  fh: [22, 0] },
+  };
+  const TEAM_PAL = [
+    { jersey: '#d82800', shade: '#881400', shorts: '#a81000', band: '#f8b800' },
+    { jersey: '#0058f8', shade: '#0000a8', shorts: '#0038b0', band: '#fcfcfc' },
+  ];
+  const SKINS = [['#fcbc8c', '#d88858'], ['#e09860', '#a86030'], ['#b06830', '#784018']];
+
+  function fighterTex(P, pal, skin) {
+    return drawTex(32, 29, (px, ctx) => {
+      const prim = (p, outline) => {
+        const [type, a, b, c, d, e] = p;
+        ctx.fillStyle = outline ? '#000000' : p[p.length - 1];
+        if (type === 'R') {
+          if (outline) ctx.fillRect(a - 1, b - 1, c + 2, d + 2);
+          else ctx.fillRect(a, b, c, d);
+        } else {
+          // 粗線（Bresenham 取樣後蓋方塊）
+          const t = outline ? e + 2 : e, o = outline ? 2 : 1;
+          const n = Math.max(Math.abs(c - a), Math.abs(d - b), 1);
+          for (let i = 0; i <= n; i++) {
+            ctx.fillRect(Math.round(a + (c - a) * i / n) - o, Math.round(b + (d - b) * i / n) - o, t, t);
+          }
+        }
+      };
+      const rect = (x, y, w, h, col) => { ctx.fillStyle = col; ctx.fillRect(x, y, w, h); };
+
+      const tw = P.tw || 8, th = P.th || 6;
+      // 前肩在身體前緣、後肩在後緣，讓球衣露出來
+      const sh = P.sh || [P.to[0] + tw - 2, P.to[1] + 1];
+      const bsh = P.sh ? [P.sh[0] - 3, P.sh[1]] : [P.to[0] + 2, P.to[1] + 1];
+      const hip = P.hip;
+      const [hx, hy] = P.hd;
+      // 由後往前：後手 → 後腳 → 身體 → 前腳 → 頭 → 前手
+      const prims = [
+        ['L', bsh[0], bsh[1], P.bh[0], P.bh[1], 2, skin[1]],
+        ['L', hip[0] - 1, hip[1] + 3, P.bf[0], P.bf[1] - 1, 2, skin[1]], ['R', P.bf[0] - 1, P.bf[1] - 1, 4, 2, '#bcbcbc'],
+        ['R', hip[0] - 3, hip[1], 7, 3, pal.shorts], ['R', P.to[0], P.to[1], tw, th, pal.jersey],
+        ['L', hip[0] + 1, hip[1] + 3, P.ff[0], P.ff[1] - 1, 2, skin[0]], ['R', P.ff[0] - 1, P.ff[1] - 1, 4, 2, '#fcfcfc'],
+        ['R', hx, hy, 8, 7, skin[0]],
+        ['L', sh[0], sh[1], P.fh[0], P.fh[1], 2, skin[0]],
+      ];
+      // 先畫整體黑色剪影當描邊，再依序上色
+      prims.forEach(p => prim(p, true));
+      prims.forEach((p, i) => {
+        prim(p, false);
+        if (i === 4) { // 身體細節
+          rect(P.to[0], P.to[1] + th - 1, tw, 1, pal.shade);
+          rect(P.to[0] + 1, P.to[1] + 1, 1, th - 2, '#fcfcfc');
+          rect(hip[0] - 3, hip[1] + 2, 7, 1, pal.shade);
+        }
+        if (i === 7) { // 頭部細節
+          rect(hx + 1, hy, 7, 1, '#181010');      // 頭髮
+          rect(hx, hy + 1, 3, 3, '#181010');
+          rect(hx + 1, hy + 2, 7, 1, pal.band);   // 頭帶
+          rect(hx + 3, hy + 4, 1, 1, skin[1]);    // 耳朵
+          rect(hx + 6, hy + 3, 1, 2, '#000000');  // 眼睛
+          rect(hx + 5, hy + 6, 2, 1, skin[1]);    // 嘴
+        }
+      });
+    });
+  }
+
+  // TEX[隊][膚色][姿勢]
+  const TEX = [0, 1].map(t => SKINS.map(sk => {
+    const o = {};
+    for (const [name, P] of Object.entries(POSES)) o[name] = fighterTex(P, TEAM_PAL[t], sk);
+    return o;
+  }));
+
+  const shadowTex = drawTex(14, 4, px => {
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 14; x++) {
+      if (((x - 6.5) / 7) ** 2 + ((y - 1.5) / 2) ** 2 <= 1) px(x, y, '#000000');
+    }
+  });
+  const cursorTex = drawTex(5, 3, px => {
+    for (let x = 0; x < 5; x++) px(x, 0, '#f8b800');
+    for (let x = 1; x < 4; x++) px(x, 1, '#f8b800');
+    px(2, 2, '#f8b800');
+  });
+
+  // ------------------------------------------------------------------
+  // 3x5 像素字型
+  // ------------------------------------------------------------------
+  const FONT = {
+    '0': '111101101101111', '1': '010110010010111', '2': '111001111100111', '3': '111001111001111',
+    '4': '101101111001001', '5': '111100111001111', '6': '111100111101111', '7': '111001001001001',
+    '8': '111101111101111', '9': '111101111001111',
+    A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110',
+    E: '111100110100111', F: '111100110100100', G: '011100101101011', H: '101101111101101',
+    I: '111010010010111', J: '001001001101010', K: '101101110101101', L: '100100100100111',
+    M: '101111111101101', N: '110101101101101', O: '010101101101010', P: '110101110100100',
+    Q: '010101101110011', R: '110101110101101', S: '011100010001110', T: '111010010010010',
+    U: '101101101101111', V: '101101101101010', W: '101101111111101', X: '101101010101101',
+    Y: '101101010010010', Z: '111001010100111',
+    ':': '000010000010000', '-': '000000111000000', '!': '010010010000010', '/': '001001010100100',
+    '>': '100010001010100', '<': '001010100010001', '+': '000010111010000', '.': '000000000000010',
+    '*': '000101010101000', '?': '111001010000010',
+  };
+  const glyphTex = {};
+  for (const [ch, bits] of Object.entries(FONT)) {
+    glyphTex[ch] = drawTex(3, 5, px => {
+      for (let i = 0; i < 15; i++) if (bits[i] === '1') px(i % 3, Math.floor(i / 3), '#ffffff');
+    });
+  }
+  // 直接畫進 canvas（給背景看板用）
+  function ctxText(ctx, str, x, y, col) {
+    ctx.fillStyle = col;
+    [...str].forEach((ch, i) => {
+      const bits = FONT[ch];
+      if (bits) for (let k = 0; k < 15; k++) if (bits[k] === '1') ctx.fillRect(x + i * 4 + k % 3, y + Math.floor(k / 3), 1, 1);
+    });
+  }
+
+  class PixelText extends PIXI.Container {
+    constructor(str = '', color = 0xffffff) {
+      super();
+      this.color = color;
+      this.str = null;
+      this.setText(str);
+    }
+    setText(str, color = this.color) {
+      if (str === this.str && color === this.color) return;
+      this.str = str;
+      this.color = color;
+      this.removeChildren().forEach(c => c.destroy());
+      for (const [ox, oy, tint] of [[1, 1, 0x000000], [0, 0, this.color]]) {
+        [...str.toUpperCase()].forEach((ch, i) => {
+          const t = glyphTex[ch];
+          if (!t) return;
+          const s = new PIXI.Sprite(t);
+          s.position.set(i * 4 + ox, oy);
+          s.tint = tint;
+          this.addChild(s);
+        });
+      }
+    }
+    get textWidth() { return this.str.length * 4 - 1; }
+  }
+
+  // ------------------------------------------------------------------
+  // 8-bit 音效（WebAudio 方波 + 雜訊）
+  // ------------------------------------------------------------------
+  const sfx = {
+    ctx: null, muted: false, noiseBuf: null,
+    init() {
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) {
+          this.ctx = new AC();
+          const len = this.ctx.sampleRate;
+          this.noiseBuf = this.ctx.createBuffer(1, len, len);
+          const d = this.noiseBuf.getChannelData(0);
+          for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+        }
+      }
+      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    },
+    get on() { return this.ctx && !this.muted && G.screen !== 'title'; },
+    tone(type, f0, f1, dur, vol = 0.05, delay = 0) {
+      if (!this.on) return;
+      const t = this.ctx.currentTime + delay;
+      const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(f0, t);
+      if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(this.ctx.destination);
+      o.start(t); o.stop(t + dur + 0.02);
+    },
+    noise(dur, vol, freq, delay = 0, swell = 0) {
+      if (!this.on) return;
+      const t = this.ctx.currentTime + delay;
+      const src = this.ctx.createBufferSource(), f = this.ctx.createBiquadFilter(), g = this.ctx.createGain();
+      src.buffer = this.noiseBuf; src.loop = true;
+      f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = 0.8;
+      if (swell) {
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(vol, t + swell);
+      } else g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(f); f.connect(g); g.connect(this.ctx.destination);
+      src.start(t); src.stop(t + dur + 0.02);
+    },
+    whistle() { [0, 0.07, 0.14, 0.21].forEach((d, i) => this.tone('square', i % 2 ? 2350 : 2100, i % 2 ? 2350 : 2100, 0.07, 0.03, d)); },
+    chant(i)  { const f = [392, 494, 440][i % 3]; this.tone('square', f, f, 0.06, 0.018); },
+    whoosh()  { this.noise(0.08, 0.06, 2000); },
+    touch()   { this.tone('square', 1047, 1568, 0.08, 0.05); },
+    evade()   { this.tone('triangle', 500, 1300, 0.12, 0.08); },
+    tackle()  { this.noise(0.25, 0.15, 350); this.tone('square', 180, 50, 0.25, 0.07); },
+    point()   { [784, 1047, 1319].forEach((f, i) => this.tone('square', f, f, i === 2 ? 0.2 : 0.08, 0.05, i * 0.08)); },
+    bad()     { this.tone('sawtooth', 247, 82, 0.4, 0.06); },
+    cheer()   { this.noise(1.3, 0.05, 1100, 0, 0.25); this.noise(1.1, 0.03, 2600, 0.1, 0.2); },
+    mash()    { this.tone('square', 220 + Math.random() * 80, 160, 0.04, 0.03); },
+  };
+
+  // ------------------------------------------------------------------
+  // 背景：天花板、觀眾席、看板、地墊與球場（透視梯形）
+  // ------------------------------------------------------------------
+  function makeArena() {
+    return drawTex(W, PANEL_Y, (px, ctx) => {
+      const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+      rect(0, 0, W, 14, '#0c0c1c');
+      for (let x = 14; x < W; x += 42) { rect(x, 3, 10, 2, '#fcfcfc'); rect(x + 1, 5, 8, 1, '#a4e4fc'); }
+      rect(0, 14, W, 34, '#241c3c');
+      const boards = ['#d82800', '#f8b800', '#0058f8', '#00a800'];
+      const words = ['KABADDI', 'RAID!', 'PIXI', '8-BIT'];
+      for (let i = 0; i < 8; i++) {
+        rect(i * 40, 48, 40, 11, boards[i % 4]);
+        rect(i * 40, 48, 40, 1, '#fcfcfc');
+        rect(i * 40 + 39, 48, 1, 11, '#000000');
+        const w = words[i % 4];
+        ctxText(ctx, w, i * 40 + Math.floor((40 - w.length * 4 + 1) / 2), 51, i % 4 === 1 ? '#000000' : '#fcfcfc');
+      }
+      rect(0, 59, W, 1, '#000000');
+
+      for (let y = 60; y < PANEL_Y; y++) {
+        const z = y - CT;
+        const s = scaleZ(clamp(z, 0, DEPTH));
+        for (let x = 0; x < W; x++) {
+          const wx = (x + 0.5 - 160) / s, ax = Math.abs(wx);
+          const seam = (((wx % 20) + 20) % 20) * s < 1;
+          let col = seam ? '#0c3490' : '#1444b0';
+          if (y < 66 && (x + y) % 2) col = '#0c3490';
+          if (z >= 0 && z <= DEPTH && ax <= HALF) {
+            const lobby = z < 6 || z > DEPTH - 6;
+            col = lobby ? '#c05010' : (seam || z % 14 === 0) ? '#d06414' : '#e07018';
+            const onV = L => Math.abs(wx - L) * s < 0.5;
+            if (onV(-HALF) || onV(HALF) || ax * s < 1) col = '#fcfcfc';
+            if (!lobby && (onV(BAULK) || onV(-BAULK))) col = '#fcfcfc';
+            if (!lobby && (onV(BONUS) || onV(-BONUS)) && z % 4 < 2) col = '#fcfcfc';
+            if (z === 0 || z === DEPTH || z === 6 || z === DEPTH - 6) col = '#fcfcfc';
+          } else if (z > DEPTH && z <= DEPTH + 2 && ax <= HALF) col = '#904008';
+          px(x, y, col);
+        }
+      }
+    });
+  }
+
+  function makeCrowd(alt) {
+    return drawTex(W, 34, (px, ctx) => {
+      const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+      let seed = 11;
+      const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      const shirts = ['#d82800', '#0058f8', '#f8b800', '#00a800', '#fcfcfc', '#d800cc', '#fc7460'];
+      const skins = ['#fcbc8c', '#e09860', '#b06830', '#784018'];
+      const hairs = ['#000000', '#3c1c00', '#7c3c00', '#202020'];
+      for (let row = 0; row < 4; row++) {
+        const by = 4 + row * 8;
+        for (let x = (row % 2) * 4 - 4; x < W; x += 8) {
+          const r1 = rnd(), r2 = rnd(), r3 = rnd(), r4 = rnd();
+          if (r4 < 0.08) continue;
+          const up = alt && r1 < 0.5 ? 1 : 0;
+          const sk = skins[Math.floor(r1 * 4)];
+          rect(x + 1, by + 5 - up, 6, 6, shirts[Math.floor(r3 * shirts.length)]);
+          rect(x + 2, by - up, 4, 5, sk);
+          rect(x + 2, by - up, 4, 1, hairs[Math.floor(r2 * 4)]);
+          if (alt && r2 < 0.35) { rect(x, by - 3, 1, 5, sk); rect(x + 7, by - 3, 1, 5, sk); }
+        }
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // PixiJS 應用程式與場景
+  // ------------------------------------------------------------------
+  const app = new PIXI.Application();
+  await app.init({ width: W, height: H, background: '#000000', antialias: false, roundPixels: true, resolution: 1 });
+  const wrap = document.getElementById('wrap');
+  const crt = document.getElementById('crt');
+  const help = document.getElementById('help');
+  wrap.prepend(app.canvas);
+
+  let scale = 1;
+  function fit() {
+    const avail = innerHeight - help.offsetHeight;
+    scale = Math.max(1, Math.floor(Math.min(innerWidth / W, avail / H)));
+    app.renderer.resize(W * scale, H * scale);
+    app.stage.scale.set(scale);
+    crt.style.setProperty('--p', scale + 'px');
+    crt.style.setProperty('--h', scale / 2 + 'px');
+  }
+  fit();
+  addEventListener('resize', fit);
+
+  const world = new PIXI.Container();
+  const hud = new PIXI.Container();
+  const panel = new PIXI.Container();
+  app.stage.addChild(world, hud, panel);
+
+  const crowdTex = [makeCrowd(false), makeCrowd(true)];
+  const arena = new PIXI.Sprite(makeArena());
+  const crowd = new PIXI.Sprite(crowdTex[0]);
+  crowd.y = 14;
+  const shadowLayer = new PIXI.Container();
+  const entityLayer = new PIXI.Container();
+  entityLayer.sortableChildren = true;
+  const fxLayer = new PIXI.Container();
+  const tagLayer = new PIXI.Container();
+  world.addChild(arena, crowd, shadowLayer, entityLayer, fxLayer, tagLayer);
+
+  // ------------------------------------------------------------------
+  // 遊戲狀態
+  // ------------------------------------------------------------------
+  const side = t => t === 0 ? -1 : 1;   // 紅隊在左、藍隊在右
+  const HOME = [[46, 5], [68, 17], [78, 31], [68, 45], [46, 57]]; // [距中線, z]
+  const TEAM_COL = [0xf85838, 0x3cbcfc];
+
+  const G = {
+    screen: 'title', mode: 'ready', t: 0, human: -1,
+    score: [0, 0], raidTeam: 0, raider: null, touched: [], crossed: false, baulk: false, bonus: false,
+    timer: 0, held: null, ctrl: null, rot: [0, 0], outSeq: 0, ai: null, cheerTeam: -1, result: '',
+    buf: null, winner: -1, excite: 0,
+  };
+  window.KB = G; // 方便除錯
+
+  const teams = [[], []];
+  for (const t of [0, 1]) for (let i = 0; i < N; i++) {
+    const e = {
+      team: t, idx: i, slot: i, x: 0, z: 0, y: 0, face: 1, alive: true, outOrder: 0, justOut: false,
+      act: null, actT: 0, actId: 0, dir: { x: 1, z: 0 }, stun: 0, cool: 0, touched: false,
+      seenId: 0, readBy: 0, walk: 0, moving: false, skin: (i + t * 2) % 3,
+    };
+    e.shadow = new PIXI.Sprite(shadowTex);
+    e.shadow.anchor.set(0.5);
+    e.shadow.alpha = 0.35;
+    e.sprite = new PIXI.Sprite(TEX[t][e.skin].stand);
+    e.sprite.anchor.set(0.5, 1);
+    e.tag = new PixelText('');
+    e.cursor = new PIXI.Sprite(cursorTex);
+    e.cursor.anchor.set(0.5, 1);
+    shadowLayer.addChild(e.shadow);
+    entityLayer.addChild(e.sprite);
+    tagLayer.addChild(e.tag, e.cursor);
+    teams[t].push(e);
+  }
+  const everyone = [...teams[0], ...teams[1]];
+  const alive = t => teams[t].filter(e => e.alive);
+  const dist = (a, b) => Math.hypot(a.x - b.x, (a.z - b.z) * 1.4);
+
+  // ------------------------------------------------------------------
+  // HUD
+  // ------------------------------------------------------------------
+  const topBar = new PIXI.Sprite(PIXI.Texture.WHITE);
+  topBar.width = W; topBar.height = 13; topBar.tint = 0x000000; topBar.alpha = 0.75;
+  const teamLabel = [new PixelText('RED', TEAM_COL[0]), new PixelText('BLUE', TEAM_COL[1])];
+  const scoreText = [new PixelText('00'), new PixelText('00')];
+  scoreText.forEach(s => s.scale.set(2));
+  teamLabel[0].position.set(4, 2);
+  scoreText[0].position.set(26, 2);
+  const pips = [[], []];
+  for (const t of [0, 1]) for (let i = 0; i < N; i++) {
+    const p = new PIXI.Sprite(PIXI.Texture.WHITE);
+    p.width = 3; p.height = 2;
+    p.position.set(t === 0 ? 4 + i * 4 : W - 23 + i * 4, 9);
+    pips[t].push(p);
+  }
+  const timerBg = new PIXI.Sprite(PIXI.Texture.WHITE);
+  timerBg.tint = 0x303030; timerBg.position.set(110, 2); timerBg.width = 100; timerBg.height = 4;
+  const timerBar = new PIXI.Sprite(PIXI.Texture.WHITE);
+  timerBar.position.set(110, 2); timerBar.height = 4;
+  const centerText = new PixelText('');
+  centerText.y = 7;
+  hud.addChild(topBar, ...teamLabel, ...scoreText, ...pips[0], ...pips[1], timerBg, timerBar, centerText);
+
+  const bannerBg = new PIXI.Sprite(PIXI.Texture.WHITE);
+  bannerBg.tint = 0x000000; bannerBg.alpha = 0.6; bannerBg.width = W; bannerBg.height = 30; bannerBg.y = 20;
+  const bannerMain = new PixelText('');
+  bannerMain.scale.set(2);
+  bannerMain.y = 23;
+  const bannerSub = new PixelText('');
+  bannerSub.y = 42;
+  hud.addChild(bannerBg, bannerMain, bannerSub);
+  const banners = [];
+  function banner(main, sub = '', color = 0xffffff, t = 70) { banners.push({ main, sub, color, t }); }
+
+  // 標題 / 結束畫面
+  const overlay = new PIXI.Container();
+  const ovBg = new PIXI.Sprite(PIXI.Texture.WHITE);
+  ovBg.tint = 0x000000; ovBg.alpha = 0.78;
+  ovBg.position.set(36, 16); ovBg.width = W - 72; ovBg.height = 124;
+  overlay.addChild(ovBg);
+  const ovLines = [];
+  function ovLine(y, str, color, s = 1) {
+    const t = new PixelText(str, color);
+    t.scale.set(s);
+    t.position.set(Math.round((W - t.textWidth * s) / 2), y);
+    overlay.addChild(t);
+    ovLines.push(t);
+    return t;
+  }
+  let pressText;
+  function buildTitle() {
+    ovLines.forEach(l => l.destroy()); ovLines.length = 0;
+    ovLine(22, 'KABADDI!', 0xf8b800, 3);
+    ovLine(43, '8-BIT RAID BATTLE', 0xfcfcfc);
+    ovLine(55, 'CATCH TABLE  DEF > ATK', 0x3cbcfc);
+    DEF_ACTS.forEach((d, i) => ovLine(64 + i * 8, `${d.padEnd(5)} > ${CATCH[d][0].padEnd(5)} ${CATCH[d][1].padEnd(5)}`, 0xfcfcfc));
+    ovLine(99, 'OTHER PAIRS: ATTACK WINS', 0xf85838);
+    ovLine(109, 'TOUCH AND RUN BACK TO SCORE', 0xa4e4fc);
+    pressText = ovLine(124, 'PRESS SPACE OR TAP', 0xf8b800);
+  }
+  function buildOver() {
+    ovLines.forEach(l => l.destroy()); ovLines.length = 0;
+    const win = G.winner === G.human;
+    ovLine(36, win ? 'YOU WIN!' : 'YOU LOSE', win ? 0xf8b800 : 0xa0a0a0, 3);
+    ovLine(66, `RED ${G.score[0]}  -  ${G.score[1]} BLUE`, 0xfcfcfc, 2);
+    pressText = ovLine(110, 'PRESS SPACE TO PLAY AGAIN', 0xf8b800);
+  }
+  hud.addChild(overlay);
+
+  // ------------------------------------------------------------------
+  // 按鈕面板（D-Pad + 四個動作鈕，攻守時內容不同）
+  // ------------------------------------------------------------------
+  const panelBg = new PIXI.Sprite(drawTex(W, H - PANEL_Y, (px, ctx) => {
+    ctx.fillStyle = '#181818'; ctx.fillRect(0, 0, W, H - PANEL_Y);
+    ctx.fillStyle = '#3c3c3c'; ctx.fillRect(0, 0, W, 1);
+    ctx.fillStyle = '#000000'; ctx.fillRect(0, 1, W, 1);
+  }));
+  panelBg.y = PANEL_Y;
+  panel.addChild(panelBg);
+
+  const DPAD = { x: 4, y: PANEL_Y + 3, w: 32, h: 30, cx: 20, cy: PANEL_Y + 18 };
+  const dpad = new PIXI.Sprite(drawTex(32, 30, (px, ctx) => {
+    const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+    rect(11, 0, 10, 30, '#000000'); rect(0, 10, 32, 10, '#000000');
+    rect(12, 1, 8, 28, '#585858'); rect(1, 11, 30, 8, '#585858');
+    rect(12, 1, 8, 1, '#888888'); rect(1, 11, 30, 1, '#888888');
+    ctx.fillStyle = '#bcbcbc';
+    for (let i = 0; i < 3; i++) {
+      rect(16 - i, 3 + i, 1 + i * 2, 1, '#bcbcbc');          // 上
+      rect(16 - i, 26 - i, 1 + i * 2, 1, '#bcbcbc');         // 下
+      rect(3 + i, 15 - i, 1, 1 + i * 2, '#bcbcbc');          // 左
+      rect(28 - i, 15 - i, 1, 1 + i * 2, '#bcbcbc');         // 右
+    }
+  }));
+  dpad.position.set(DPAD.x, DPAD.y);
+  const dpadDot = new PIXI.Sprite(PIXI.Texture.WHITE);
+  dpadDot.width = 4; dpadDot.height = 4; dpadDot.tint = 0xf8b800; dpadDot.anchor.set(0.5);
+  panel.addChild(dpad, dpadDot);
+
+  function buttonTex(base, light, dark) {
+    return drawTex(66, 32, (px, ctx) => {
+      const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+      rect(0, 0, 66, 32, '#000000');
+      rect(1, 1, 64, 30, dark);
+      rect(1, 1, 63, 29, light);
+      rect(2, 2, 62, 28, base);
+    });
+  }
+  const BTN_TEX = {
+    atk: [buttonTex('#a81000', '#f85838', '#500000'), buttonTex('#f83800', '#fca044', '#881400')],
+    def: [buttonTex('#0038b0', '#3cbcfc', '#001858'), buttonTex('#0078f8', '#a4e4fc', '#0000a8')],
+    off: [buttonTex('#383838', '#585858', '#202020'), buttonTex('#383838', '#585858', '#202020')],
+  };
+  const KEY_LABEL = ['Z', 'X', 'C', 'V'];
+  const buttons = [];
+  for (let i = 0; i < 4; i++) {
+    const c = new PIXI.Container();
+    c.position.set(42 + i * 69, PANEL_Y + 3);
+    const bg = new PIXI.Sprite(BTN_TEX.off[0]);
+    const keyBox = new PIXI.Sprite(PIXI.Texture.WHITE);
+    keyBox.width = 9; keyBox.height = 9; keyBox.position.set(4, 3); keyBox.tint = 0x000000; keyBox.alpha = 0.5;
+    const key = new PixelText(KEY_LABEL[i], 0xf8b800);
+    key.position.set(7, 5);
+    const name = new PixelText('');
+    name.position.set(16, 5);
+    const b1 = new PixelText('', 0xb8f818), b2 = new PixelText('', 0xb8f818);
+    b1.position.set(6, 15); b2.position.set(6, 23);
+    c.addChild(bg, keyBox, key, name, b1, b2);
+    panel.addChild(c);
+    buttons.push({ c, bg, name, b1, b2, x: c.x, y: c.y, w: 66, h: 32, flash: 0 });
+  }
+  let panelRole = null;
+  function updatePanel() {
+    let role = 'off';
+    if (G.screen === 'play' && G.raider) role = G.raidTeam === G.human ? 'atk' : 'def';
+    buttons.forEach(b => {
+      b.bg.texture = BTN_TEX[role][b.flash > 0 ? 1 : 0];
+      const off = b.flash > 0 ? 1 : 0;
+      b.name.y = 5 + off; b.b1.y = 15 + off; b.b2.y = 23 + off;
+      if (b.flash > 0) b.flash--;
+    });
+    if (role === panelRole) return;
+    panelRole = role;
+    buttons.forEach((b, i) => {
+      if (role === 'off') { b.name.setText('----'); b.b1.setText(''); b.b2.setText(''); return; }
+      const name = role === 'atk' ? ATK_ACTS[i] : DEF_ACTS[i];
+      const beats = role === 'atk' ? atkBeats(name) : CATCH[name];
+      b.name.setText(name);
+      b.b1.setText('>' + beats[0]);
+      b.b2.setText('>' + beats[1]);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // 特效
+  // ------------------------------------------------------------------
+  const particles = [], floats = [];
+  let shake = 0, frame = 0;
+
+  function particle(x, y, vx, vy, color, life, g = 0.15) {
+    const s = new PIXI.Sprite(PIXI.Texture.WHITE);
+    s.width = 1; s.height = 1; s.tint = color;
+    fxLayer.addChild(s);
+    particles.push({ s, x, y, vx, vy, life, g });
+  }
+  function burst(x, y, colors, n, speed) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, v = speed * (0.4 + Math.random() * 0.6);
+      particle(x, y, Math.cos(a) * v, Math.sin(a) * v - 1, colors[i % colors.length], 20 + Math.random() * 20);
+    }
+  }
+  function dust(e) {
+    const x = SX(e.x, e.z), y = SY(e.z);
+    for (let i = 0; i < 6; i++) particle(x + (i < 3 ? -4 : 4), y - 1, (i < 3 ? -1 : 1) * (0.3 + Math.random() * 0.6), -Math.random() * 0.8, 0xfcfcfc, 14, 0.05);
+  }
+  function floatText(str, e, color, dy = 0) {
+    const t = new PixelText(str, color);
+    t.position.set(Math.round(SX(e.x, e.z) - t.textWidth / 2), Math.round(SY(e.z) - 40 + dy));
+    fxLayer.addChild(t);
+    floats.push({ t, life: 50 });
+  }
+
+  // ------------------------------------------------------------------
+  // 輸入
+  // ------------------------------------------------------------------
+  const keys = new Set();
+  const actQueue = [];
+  const pointers = new Map();
+  const KEY_ACT = { KeyZ: 0, KeyJ: 0, KeyX: 1, KeyK: 1, KeyC: 2, KeyL: 2, KeyV: 3, Semicolon: 3 };
+  const MOVE_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyA', 'KeyD', 'KeyW', 'KeyS'];
+
+  function pressAct(i) {
+    sfx.init();
+    if (G.screen === 'title' || G.screen === 'over') { startGame(); return; }
+    actQueue.push(i);
+    if (i >= 0) buttons[i].flash = 8;
+  }
+  addEventListener('keydown', e => {
+    if (e.code in KEY_ACT) { e.preventDefault(); if (!e.repeat) pressAct(KEY_ACT[e.code]); }
+    else if (MOVE_KEYS.includes(e.code)) { e.preventDefault(); keys.add(e.code); }
+    else if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); if (!e.repeat) pressAct(-1); }
+    else if (e.code === 'Escape') startDemo();
+    else if (e.code === 'KeyM') sfx.muted = !sfx.muted;
+    else if (e.code === 'KeyG') crt.hidden = !crt.hidden;
+  });
+  addEventListener('keyup', e => keys.delete(e.code));
+  addEventListener('blur', () => keys.clear());
+
+  const toVirtual = e => {
+    const r = app.canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H };
+  };
+  app.canvas.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const p = toVirtual(e);
+    pointers.set(e.pointerId, p);
+    sfx.init();
+    if (G.screen !== 'play') { pressAct(-1); return; }
+    const bi = buttons.findIndex(b => p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h);
+    if (bi >= 0) pressAct(bi);
+    else if (p.y < PANEL_Y) pressAct(-1); // 點球場也可以連打掙扎
+  });
+  app.canvas.addEventListener('pointermove', e => { if (pointers.has(e.pointerId)) pointers.set(e.pointerId, toVirtual(e)); });
+  const pointerEnd = e => pointers.delete(e.pointerId);
+  app.canvas.addEventListener('pointerup', pointerEnd);
+  app.canvas.addEventListener('pointercancel', pointerEnd);
+
+  function readInput() {
+    let dx = 0, dz = 0;
+    if (keys.has('ArrowLeft') || keys.has('KeyA')) dx -= 1;
+    if (keys.has('ArrowRight') || keys.has('KeyD')) dx += 1;
+    if (keys.has('ArrowUp') || keys.has('KeyW')) dz -= 1;
+    if (keys.has('ArrowDown') || keys.has('KeyS')) dz += 1;
+    for (const p of pointers.values()) {
+      if (p.x < DPAD.x + DPAD.w + 4 && p.y >= PANEL_Y) {
+        const ox = p.x - DPAD.cx, oz = p.y - DPAD.cy;
+        if (Math.abs(ox) > 4) dx = Math.sign(ox);
+        if (Math.abs(oz) > 4) dz = Math.sign(oz);
+      }
+    }
+    dpadDot.position.set(DPAD.cx + dx * 10, DPAD.cy + dz * 9);
+    dpadDot.visible = !!(dx || dz);
+    return { dx, dz, acts: actQueue.splice(0) };
+  }
+
+  // ------------------------------------------------------------------
+  // 比賽流程
+  // ------------------------------------------------------------------
+  function startMatch(human) {
+    G.human = human;
+    G.score = [0, 0];
+    G.rot = [0, 0];
+    G.raidTeam = Math.random() < 0.5 || human >= 0 ? 0 : 1;
+    everyone.forEach(e => { e.alive = true; e.justOut = false; });
+    banners.length = 0;
+    setupRaid();
+  }
+  function startDemo() { G.screen = 'title'; buildTitle(); startMatch(-1); }
+  function startGame() { G.screen = 'play'; startMatch(0); }
+
+  function layoutBench() {
+    for (const t of [0, 1]) {
+      teams[t].filter(e => !e.alive).sort((a, b) => a.outOrder - b.outOrder).forEach((e, k) => {
+        e.x = side(t) * (30 + k * 14); e.z = -9; e.face = -side(t);
+      });
+    }
+  }
+
+  function setupRaid() {
+    const rt = G.raidTeam, dt = 1 - rt;
+    let r = null;
+    for (let k = 0; k < N && !r; k++) {
+      const e = teams[rt][(G.rot[rt] + k) % N];
+      if (e.alive) { r = e; G.rot[rt] = (e.idx + 1) % N; }
+    }
+    everyone.forEach(e => {
+      e.act = null; e.stun = 0; e.y = 0; e.touched = false; e.cool = 30; e.justOut = false; e.moving = false;
+    });
+    for (const t of [0, 1]) {
+      const al = alive(t), s = side(t);
+      al.forEach((e, j) => {
+        e.slot = al.length === 1 ? 2 : Math.round(j * (N - 1) / (al.length - 1));
+        e.x = s * HOME[e.slot][0]; e.z = HOME[e.slot][1]; e.face = -s;
+      });
+    }
+    layoutBench();
+    r.x = side(rt) * 10; r.z = 31; r.face = side(dt);
+    G.raider = r;
+    G.touched = []; G.crossed = false; G.baulk = false; G.bonus = false;
+    G.timer = RAID_T; G.held = null; G.ctrl = null; G.buf = null; G.cheerTeam = -1;
+    G.ai = {
+      mode: 'enter', greed: 1 + (Math.random() < 0.35 ? 1 : 0), plan: pick(ATK_ACTS), tgt: null, retarget: 0,
+      phase: Math.random() * 6, lane: 12 + Math.random() * 38, tryBonus: alive(dt).length >= 4 && Math.random() < 0.3,
+      react: G.human === dt ? 0.45 : 0.5,
+    };
+    G.mode = 'ready';
+    G.t = G.screen === 'title' ? 50 : 75;
+    const col = TEAM_COL[rt];
+    if (G.human < 0) banner(`${rt === 0 ? 'RED' : 'BLUE'} RAID`, '', col, G.t);
+    else if (rt === G.human) banner('YOUR RAID!', 'TOUCH THEN RETURN TO MIDLINE', col, G.t);
+    else banner('DEFEND!', 'CATCH THE RAIDER', col, G.t);
+  }
+
+  function killOut(e) { e.alive = false; e.outOrder = ++G.outSeq; e.justOut = true; e.act = null; e.stun = 0; }
+  function revive(t, n) {
+    teams[t].filter(e => !e.alive).sort((a, b) => a.outOrder - b.outOrder).slice(0, n).forEach(e => { e.alive = true; e.justOut = false; });
+  }
+  const tname = t => t === 0 ? 'RED' : 'BLUE';
+
+  function endRaid(kind) {
+    const rt = G.raidTeam, dt = 1 - rt, r = G.raider;
+    let ptsR = 0, ptsD = 0;
+    if (kind === 'success') {
+      const hit = G.touched.filter(d => d.alive);
+      ptsR = hit.length + (G.bonus ? 1 : 0);
+      if (ptsR > 0) {
+        hit.forEach(killOut);
+        const sub = [hit.length ? `TOUCH ${hit.length}` : '', G.bonus ? 'BONUS 1' : ''].filter(Boolean).join('  ');
+        banner(`+${ptsR} ${tname(rt)}`, sub, TEAM_COL[rt], 90);
+        G.cheerTeam = rt;
+        sfx.point(); sfx.cheer();
+      } else if (!G.baulk) kind = 'baulk';
+      else { banner('EMPTY RAID', 'NO POINTS', 0xbcbcbc, 80); }
+    }
+    if (kind === 'baulk') {
+      killOut(r); ptsD = 1;
+      banner('BAULK LINE!', `RAIDER OUT  +1 ${tname(dt)}`, TEAM_COL[dt], 90);
+      G.cheerTeam = dt; sfx.bad();
+    } else if (kind === 'tackled') {
+      const sup = alive(dt).length <= 3;
+      killOut(r); ptsD = sup ? 2 : 1;
+      banner(sup ? 'SUPER TACKLE!' : 'TACKLE!', `+${ptsD} ${tname(dt)}`, TEAM_COL[dt], 90);
+      G.cheerTeam = dt; sfx.cheer();
+    } else if (kind === 'timeout') {
+      killOut(r); ptsD = 1;
+      banner('OUT OF BREATH', `RAIDER OUT  +1 ${tname(dt)}`, TEAM_COL[dt], 90);
+      G.cheerTeam = dt; sfx.bad();
+    }
+    G.result = kind;
+    G.score[rt] += ptsR; G.score[dt] += ptsD;
+    revive(rt, ptsR); revive(dt, ptsD);
+    G.t = 120;
+    for (const t of [0, 1]) {
+      if (alive(t).length === 0) {
+        G.score[1 - t] += 2;
+        teams[t].forEach(e => { e.alive = true; e.justOut = false; });
+        banner('ALL OUT!', `+2 ${tname(1 - t)}  ${tname(t)} REVIVES`, TEAM_COL[1 - t], 90);
+        G.cheerTeam = 1 - t;
+        G.t += 90;
+      }
+    }
+    if (ptsR + ptsD > 0) G.excite = 90;
+    G.mode = 'result';
+  }
+
+  // ------------------------------------------------------------------
+  // 動作系統
+  // ------------------------------------------------------------------
+  let actSeq = 0;
+  function phaseOf(e) {
+    if (!e.act) return null;
+    const a = ACT[e.act], t = e.actT;
+    return t < a.s ? 'start' : t < a.s + a.a ? 'active' : 'rec';
+  }
+  const committed = e => { const p = phaseOf(e); return p === 'start' || p === 'active'; };
+
+  function moveBy(e, dx, dz) {
+    e.x = clamp(e.x + dx, -HALF + 2, HALF - 2);
+    e.z = clamp(e.z + dz, 1, DEPTH - 1);
+    if (e !== G.raider) {
+      const s = side(e.team);
+      if (e.x * s < 4) e.x = s * 4; // 防守方不能越過中線
+    }
+  }
+  function steer(e, tx, tz, spd) {
+    const dx = tx - e.x, dz = tz - e.z, d = Math.hypot(dx, dz);
+    if (d < 1.2) return false;
+    const k = Math.min(spd, d) / d;
+    moveBy(e, dx * k, dz * k * 0.75);
+    e.moving = true;
+    return true;
+  }
+
+  function startAct(e, name, dx, dz) {
+    const d = Math.hypot(dx, dz) || 1;
+    e.act = name; e.actT = 0; e.actId = ++actSeq;
+    e.dir = { x: dx / d, z: dz / d };
+    if (Math.abs(dx) > 0.1) e.face = Math.sign(dx);
+    sfx.whoosh();
+  }
+  function doDefAct(d, name) {
+    const r = G.raider;
+    startAct(d, name, r.x - d.x, r.z - d.z);
+    d.cool = 40 + Math.random() * 40;
+    if (name === 'CHAIN') {
+      // 人鏈：拉最近的隊友一起撲
+      let best = null, bd = 36;
+      for (const m of alive(d.team)) {
+        if (m === d || m.act || m.stun || m === G.raider) continue;
+        const md = dist(m, d);
+        if (md < bd) { bd = md; best = m; }
+      }
+      if (best) { startAct(best, 'CHAIN', r.x - best.x, r.z - best.z); best.cool = d.cool; }
+    }
+  }
+  function tickAct(e) {
+    const a = ACT[e.act], t = e.actT, r = G.raider;
+    // 防守招式在判定開始那一刻重新瞄準攻擊手
+    if (t === a.s && DEF_ACTS.includes(e.act) && r) {
+      const dx = r.x - e.x, dz = r.z - e.z, d = Math.hypot(dx, dz) || 1;
+      e.dir = { x: dx / d, z: dz / d };
+      e.face = Math.sign(dx) || e.face;
+    }
+    const ph = phaseOf(e);
+    if (ph === 'active') {
+      const sp = LUNGE[e.act];
+      if (sp) moveBy(e, e.dir.x * sp, e.dir.z * sp * 0.7);
+      if (e.act === 'JUMP') e.y = Math.round(Math.sin((t - a.s + 1) / a.a * Math.PI) * 14);
+      if (e.act === 'ANKLE' && t === a.s + a.a - 1) dust(e);
+    } else e.y = 0;
+    e.actT++;
+    if (e.actT >= a.s + a.a + a.r) { e.act = null; e.y = 0; }
+  }
+
+  // ------------------------------------------------------------------
+  // 接觸判定：相剋表在這裡決定勝負
+  // ------------------------------------------------------------------
+  function catchRaider(d, counter) {
+    const r = G.raider, dt = d.team;
+    const holders = [d];
+    for (const m of alive(dt)) {
+      if (m !== d && !m.stun && dist(m, r) < 26 && holders.length < 3) holders.push(m);
+    }
+    holders.forEach(h => { h.act = null; h.stun = 0; });
+    r.act = null; r.y = 0;
+    G.held = { t: 100, holders };
+    G.mode = 'held';
+    shake = 8;
+    sfx.tackle();
+    if (counter) banner('COUNTER!', `${d.act0} > ${counter}`, TEAM_COL[dt], 50);
+    else banner('CAUGHT!', G.human === r.team ? 'MASH BUTTONS TO REACH MIDLINE' : '', TEAM_COL[dt], 50);
+    burst(SX(r.x, r.z), SY(r.z) - 14, [0xfcfcfc, 0xf8b800], 12, 2);
+  }
+
+  function resolve() {
+    const r = G.raider, dt = 1 - r.team, so = side(dt);
+    if (r.x * so < -1) return; // 攻擊手還在自己半場：不能抓也不能摸
+    const rp = phaseOf(r);
+    for (const d of alive(dt)) {
+      if (d.stun) continue;
+      const dd = dist(r, d), dp = phaseOf(d);
+      // 防守判定中
+      if (dp === 'active' && dd <= ACT[d.act].reach) {
+        if ((rp === 'start' || rp === 'active') && !CATCH[d.act].includes(r.act)) {
+          floatText('EVADE', r, 0xa4e4fc);
+          floatText(`${r.act}>${d.act}`, r, 0xfcfcfc, 8);
+          sfx.evade();
+          d.act = null; d.stun = 28;
+          continue;
+        }
+        d.act0 = d.act;
+        catchRaider(d, rp === 'start' || rp === 'active' ? r.act : null);
+        return;
+      }
+      // 攻擊判定中
+      if (rp === 'active' && dd <= ACT[r.act].reach && !d.touched) {
+        if (committed(d) && CATCH[d.act].includes(r.act)) {
+          d.act0 = d.act;
+          catchRaider(d, r.act);
+          return;
+        }
+        if (committed(d)) {
+          floatText(`${r.act}>${d.act}`, d, 0xfcfcfc, 8);
+          d.act = null; d.stun = 30;
+        }
+        d.touched = true;
+        G.touched.push(d);
+        floatText('TOUCH', d, 0xf8b800);
+        burst(SX(d.x, d.z), SY(d.z) - 16, [0xf8b800, 0xfcfcfc], 10, 1.8);
+        sfx.touch();
+        G.excite = 40;
+      }
+    }
+  }
+
+  function separate(list) {
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+      const a = list[i], b = list[j];
+      if (a.y > 3 || b.y > 3) continue;
+      const dx = b.x - a.x, dz = (b.z - a.z) * 1.4, d = Math.hypot(dx, dz);
+      if (d >= 9 || d < 0.01) continue;
+      const push = (9 - d) / 2, nx = dx / d, nz = dz / d / 1.4;
+      if (!a.act) moveBy(a, -nx * push, -nz * push);
+      if (!b.act) moveBy(b, nx * push, nz * push);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 電腦 AI
+  // ------------------------------------------------------------------
+  function nearestDef(r, filter = () => true) {
+    let best = null, bd = 1e9;
+    for (const d of alive(1 - r.team)) {
+      if (!filter(d)) continue;
+      const dd = dist(r, d);
+      if (dd < bd) { bd = dd; best = d; }
+    }
+    return best;
+  }
+
+  function aiRaider(r) {
+    const ai = G.ai, dt = 1 - r.team, so = side(dt), own = -so;
+    if (r.act || r.stun) return;
+    const defs = alive(dt), depth = r.x * so;
+
+    // 看到防守方起手：讀招反制
+    for (const d of defs) {
+      if (phaseOf(d) !== 'start' || d.seenId === d.actId) continue;
+      d.seenId = d.actId;
+      if (dist(r, d) > ACT[d.act].reach + lungeDist(d.act) + 6 || Math.random() > ai.react) continue;
+      const opts = ATK_ACTS.filter(a => !CATCH[d.act].includes(a));
+      if (ai.mode === 'escape') {
+        const evasive = opts.filter(a => a === 'JUMP' || a === 'DUCK');
+        startAct(r, evasive.length ? evasive[0] : pick(opts), own, 0);
+      } else startAct(r, pick(opts), d.x - r.x, d.z - r.z);
+      return;
+    }
+
+    const untouched = defs.filter(d => !d.touched);
+    if (ai.mode !== 'escape' && (G.touched.length >= ai.greed || G.timer < RAID_T * 0.35 || !untouched.length ||
+        (ai.tryBonus && G.bonus && depth > BONUS))) ai.mode = 'escape';
+
+    if (ai.mode === 'enter') {
+      const goal = ai.tryBonus ? BONUS + 4 : BAULK + 5;
+      const near = nearestDef(r);
+      if (depth >= goal - 1 || (near && dist(r, near) < 24 && !ai.tryBonus)) ai.mode = 'hunt';
+      else { steer(r, so * goal, ai.lane, 1.15); r.face = so; return; }
+    }
+
+    if (ai.mode === 'hunt') {
+      if (!ai.tgt || !ai.tgt.alive || ai.tgt.touched || --ai.retarget <= 0) {
+        ai.tgt = nearestDef(r, d => !d.touched);
+        ai.retarget = 90;
+      }
+      const tg = ai.tgt;
+      if (!tg) { ai.mode = 'escape'; return; }
+      const dd = dist(r, tg);
+      const reach = ACT[ai.plan].reach + lungeDist(ai.plan) * 0.6;
+      if (dd < reach && Math.random() < 0.07) {
+        startAct(r, ai.plan, tg.x - r.x, tg.z - r.z);
+        ai.plan = pick(ATK_ACTS);
+        return;
+      }
+      // 在對手攻擊範圍邊緣來回試探
+      const want = reach + 3 + Math.sin(frame / 13 + ai.phase) * 7;
+      const vx = r.x - tg.x, vz = r.z - tg.z, l = Math.hypot(vx, vz) || 1;
+      steer(r, tg.x + vx / l * want, tg.z + vz / l * want, 1.1);
+      r.face = Math.sign(tg.x - r.x) || r.face;
+      return;
+    }
+
+    // escape：往中線跑，避開防守者
+    let tz = r.z;
+    for (const d of defs) {
+      const dd = dist(r, d);
+      if (dd < 34) tz += Math.sign(r.z - d.z || (r.z < 31 ? -1 : 1)) * (34 - dd) * 0.5;
+    }
+    steer(r, own * 12, clamp(tz, 4, DEPTH - 4), 1.2);
+    r.face = so;
+    const blocker = defs.find(d => (d.x - r.x) * own > 0 && dist(r, d) < 20);
+    if (blocker && Math.random() < 0.04) startAct(r, pick(['JUMP', 'DUCK']), own, 0);
+  }
+
+  function aiDefender(d, r, aggr, read) {
+    if (d.act || d.stun) return;
+    const s = side(d.team), depth = r.x * s, dd = dist(d, r);
+    d.face = Math.sign(r.x - d.x) || d.face;
+
+    if (depth > -2) {
+      // 讀攻擊手的起手動作，出剋制招
+      // 每次出招只有一名防守者有機會讀招
+      if (r.act && phaseOf(r) === 'start' && r.readBy !== r.actId && dd < 30) {
+        r.readBy = r.actId;
+        if (Math.random() < read) {
+          const opt = CATCH_BY[r.act].find(a => ACT[a].reach + lungeDist(a) >= dd);
+          if (opt) { doDefAct(d, opt); return; }
+        }
+      }
+      if (d.cool <= 0 && G.mode === 'raid') {
+        const rp = phaseOf(r);
+        let p = (!r.act || rp === 'rec') ? 0.014 : 0.004;
+        if (Math.sign(d.x - r.x) !== r.face) p *= 2.2; // 背對我
+        if (r.y > 0) p *= 0.3;
+        p *= aggr;
+        if (Math.random() < p) {
+          const opts = DEF_ACTS.filter(a => ACT[a].reach + lungeDist(a) * 0.7 >= dd);
+          if (opts.length) { doDefAct(d, pick(opts)); return; }
+        }
+      }
+    }
+
+    // 站位
+    const h = HOME[d.slot];
+    let tx = s * h[0], tz = h[1] + (r.z - 31) * 0.35;
+    const corner = d.slot === 0 || d.slot === N - 1;
+    if (depth > 0) tx = s * Math.max(10, h[0] - depth * 0.15);
+    if (corner && depth > 50) {
+      // 邊角包抄，截斷退路
+      tx = s * Math.max(8, depth - 24);
+      tz = d.slot === 0 ? Math.max(3, r.z - 14) : Math.min(DEPTH - 3, r.z + 14);
+    }
+    if (dd < 17) {
+      const k = 17 / (dd || 1);
+      tx = r.x + (d.x - r.x) * k * 1.2;
+      tz = r.z + (d.z - r.z) * k * 1.2;
+    }
+    steer(d, tx, tz, 0.85);
+  }
+  // 攻擊招式 → 剋它的防守招式
+  const CATCH_BY = {};
+  for (const a of ATK_ACTS) CATCH_BY[a] = DEF_ACTS.filter(d => CATCH[d].includes(a));
+
+  // ------------------------------------------------------------------
+  // 玩家操作
+  // ------------------------------------------------------------------
+  function humanControl(e, inp, isAtk) {
+    const pressed = inp.acts.filter(i => i >= 0);
+    if (pressed.length) G.buf = { i: pressed[pressed.length - 1], t: 10 };
+    if (e.stun || e.act) {
+      if (G.buf && --G.buf.t <= 0) G.buf = null;
+      return;
+    }
+    if (G.buf) {
+      const i = G.buf.i;
+      G.buf = null;
+      if (isAtk) {
+        const name = ATK_ACTS[i];
+        let dx = inp.dx, dz = inp.dz;
+        const n = nearestDef(e);
+        if (!dx && !dz) {
+          if (n && (name === 'TOUCH' || name === 'KICK')) { dx = n.x - e.x; dz = n.z - e.z; }
+          else dx = e.face;
+        }
+        startAct(e, name, dx, dz);
+        if (name === 'KICK' && n) e.face = Math.sign(n.x - e.x) || e.face;
+      } else doDefAct(e, DEF_ACTS[i]);
+      return;
+    }
+    if (inp.dx || inp.dz) {
+      const k = inp.dx && inp.dz ? 0.75 : 1;
+      moveBy(e, inp.dx * (isAtk ? 1.25 : 1.1) * k, inp.dz * 0.85 * k);
+      e.moving = true;
+      if (isAtk && inp.dx) e.face = inp.dx;
+    }
+    if (!isAtk) e.face = Math.sign(G.raider.x - e.x) || e.face;
+  }
+
+  // ------------------------------------------------------------------
+  // 每一格的邏輯
+  // ------------------------------------------------------------------
+  function stepRaid(inp) {
+    const r = G.raider, rt = G.raidTeam, dt = 1 - rt, so = side(dt);
+    const defs = alive(dt);
+    everyone.forEach(e => { e.moving = false; if (e.stun > 0) e.stun--; if (e.cool > 0) e.cool--; });
+
+    G.timer--;
+    if (G.timer % 10 === 0) sfx.chant(G.timer / 10);
+
+    // 防守方由誰操作
+    if (G.human === dt) {
+      const c = G.ctrl;
+      if (!c || !c.alive || (!c.act && !c.stun)) {
+        let n = null, nd = 1e9;
+        for (const d of defs) { const dd = dist(d, r); if (!d.stun && dd < nd) { nd = dd; n = d; } }
+        if (n && (!c || !c.alive || c.stun || nd + 8 < dist(c, r))) G.ctrl = n;
+      }
+    } else G.ctrl = null;
+
+    if (G.human === rt) humanControl(r, inp, true);
+    else aiRaider(r);
+    for (const d of defs) {
+      if (d === G.ctrl) humanControl(d, inp, false);
+      else aiDefender(d, r, G.human === dt ? 0.5 : 1, G.human === dt ? 0.3 : G.human === rt ? 0.4 : 0.5);
+    }
+    // 攻擊方隊友：站在自己半場觀戰
+    for (const m of alive(rt)) if (m !== r) m.face = so;
+
+    for (const e of [r, ...defs]) if (e.act) tickAct(e);
+    separate([r, ...defs]);
+    resolve();
+    if (G.mode !== 'raid') return;
+
+    const depth = r.x * so;
+    if (depth > 2) G.crossed = true;
+    if (depth >= BAULK && !G.baulk) G.baulk = true;
+    if (depth >= BONUS && !G.bonus && r.y < 2 && defs.length >= 4) {
+      G.bonus = true;
+      floatText('BONUS!', r, 0xb8f818);
+      sfx.touch();
+    }
+    if (G.crossed && depth < -3 && !r.act) { endRaid('success'); return; }
+    if (G.timer <= 0) endRaid('timeout');
+  }
+
+  function stepHeld(inp) {
+    const r = G.raider, dt = 1 - r.team, so = side(dt), own = -so, held = G.held;
+    held.t--;
+    let mash = 0;
+    if (G.human === r.team) mash = inp.acts.length;
+    else if (Math.random() < 0.14) mash = 1;
+    if (mash) sfx.mash();
+    const n = held.holders.length;
+    r.x += own * mash * 3.2 / (1 + 0.5 * (n - 1));
+    r.x -= own * 0.09 * n;
+    r.x = clamp(r.x, -HALF + 2, HALF - 2);
+    r.face = own;
+    if (frame % 4 === 0) r.z += Math.random() < 0.5 ? -0.5 : 0.5;
+    held.holders.forEach((h, i) => {
+      h.x = r.x + so * (7 + (i >> 1) * 4);
+      h.z = clamp(r.z + (i === 1 ? -6 : i === 2 ? 6 : 0), 1, DEPTH - 1);
+      h.face = own;
+    });
+    if (r.x * so <= 0) {
+      // 拖著防守者摸到中線：抓人的也出局
+      held.holders.forEach(h => { if (!h.touched) { h.touched = true; G.touched.push(h); } });
+      floatText('LINE!', r, 0xf8b800);
+      endRaid('success');
+    } else if (held.t <= 0) endRaid('tackled');
+  }
+
+  function step() {
+    frame++;
+    const inp = readInput();
+    if (G.mode === 'ready') {
+      if (--G.t <= 0) { G.mode = 'raid'; sfx.whistle(); }
+    } else if (G.mode === 'raid') stepRaid(inp);
+    else if (G.mode === 'held') stepHeld(inp);
+    else if (G.mode === 'result') {
+      everyone.forEach(e => { e.act = null; e.y = 0; });
+      if (--G.t <= 0) {
+        const win = G.score[0] >= WIN_SCORE ? 0 : G.score[1] >= WIN_SCORE ? 1 : -1;
+        if (win >= 0) {
+          if (G.screen === 'play') {
+            G.winner = win; G.screen = 'over'; G.mode = 'end'; G.cheerTeam = win;
+            buildOver();
+            if (win === G.human) sfx.point(); else sfx.bad();
+          } else startMatch(-1);
+        } else {
+          G.raidTeam = 1 - G.raidTeam;
+          setupRaid();
+        }
+      }
+    }
+
+    // 粒子與浮動文字
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.vy += p.g; p.x += p.vx; p.y += p.vy; p.life--;
+      p.s.position.set(Math.round(p.x), Math.round(p.y));
+      if (p.life <= 0) { p.s.destroy(); particles.splice(i, 1); }
+    }
+    for (let i = floats.length - 1; i >= 0; i--) {
+      const f = floats[i];
+      if (f.life-- % 2 === 0) f.t.y -= 1;
+      f.t.visible = f.life > 12 || f.life % 4 < 2;
+      if (f.life <= 0) { f.t.destroy(); floats.splice(i, 1); }
+    }
+    render();
+  }
+
+  // ------------------------------------------------------------------
+  // 繪製
+  // ------------------------------------------------------------------
+  function poseOf(e) {
+    if (!e.alive) return G.mode === 'result' && e.justOut ? 'down' : 'sit';
+    if (e.z < 0) return 'sit';
+    if (G.mode === 'held') {
+      if (e === G.raider) return 'caught';
+      if (G.held.holders.includes(e)) return 'grab';
+    }
+    if (G.mode === 'result' || G.mode === 'end') {
+      if (e.team === G.cheerTeam) return ((frame + e.idx * 5) >> 3) & 1 ? 'cheer' : 'stand';
+      return 'stand';
+    }
+    if (e.stun) return 'stun';
+    if (e.act) {
+      const ph = phaseOf(e);
+      switch (e.act) {
+        case 'TOUCH': return ph === 'start' ? 'touchPrep' : ph === 'active' ? 'touch' : 'stance';
+        case 'KICK':  return ph === 'start' ? 'kickPrep' : ph === 'active' ? 'kick' : 'stance';
+        case 'JUMP':  return ph === 'active' ? 'jump' : 'crouch';
+        case 'DUCK':  return ph === 'start' ? 'duckPrep' : ph === 'active' ? 'duck' : 'crouch';
+        case 'ANKLE': return ph === 'start' ? 'crouch' : ph === 'active' ? 'ankle' : 'down';
+        case 'WAIST': return ph === 'start' ? 'grab' : ph === 'active' ? 'waist' : 'stance';
+        case 'ARM':   return ph === 'start' ? 'armPrep' : ph === 'active' ? 'arm' : 'stand';
+        case 'CHAIN': return ph === 'rec' ? 'stance' : 'chain';
+      }
+    }
+    const inRaid = e === G.raider || e.team !== G.raidTeam;
+    if (!inRaid) return 'stand';
+    if (e.moving) e.walk++;
+    return e.moving && (e.walk >> 3) & 1 ? 'walk' : 'stance';
+  }
+
+  function render() {
+    const r = G.raider;
+    for (const e of everyone) {
+      const pose = poseOf(e);
+      const sx = Math.round(SX(e.x, e.z)), sy = Math.round(SY(e.z));
+      let bob = 0;
+      if (pose === 'cheer') bob = 2;
+      const spr = e.sprite;
+      spr.texture = TEX[e.team][e.skin][pose];
+      spr.position.set(sx, sy - Math.round(e.y) - bob + 1);
+      spr.scale.x = e.face < 0 ? -1 : 1;
+      spr.zIndex = e.z * 10 + (e === r ? 5 : 0);
+      e.shadow.position.set(sx, sy);
+      e.shadow.visible = e.alive || e.z < 0 || e.justOut;
+      spr.visible = true;
+
+      // 頭上標籤
+      let tag = '', col = 0xffffff;
+      const live = G.mode === 'raid' || G.mode === 'held';
+      if (e === r && live && e.alive) {
+        tag = G.mode === 'held' ? (frame % 20 < 12 ? 'MASH!' : '') : (G.timer < 180 && frame % 16 < 8) ? '' : 'KABADDI';
+        col = G.timer < 180 ? 0xf8b800 : TEAM_COL[e.team];
+      } else if (e.alive && live && e.touched) { tag = '!'; col = 0xf8b800; }
+      else if (e.alive && e.stun) { tag = '*'; col = 0xf8b800; }
+      e.tag.setText(tag, col);
+      const headY = sy - Math.round(e.y) - 30;
+      e.tag.position.set(sx - Math.floor(e.tag.textWidth / 2), headY - 5);
+      e.tag.visible = !!tag;
+      const mine = G.screen === 'play' && live && (e === G.ctrl || (e === r && r.team === G.human));
+      e.cursor.visible = mine && frame % 30 < 22;
+      e.cursor.position.set(sx, headY - (tag ? 7 : 1));
+    }
+
+    // 觀眾
+    const fast = G.excite > 0;
+    if (G.excite > 0) G.excite--;
+    crowd.texture = crowdTex[Math.floor(frame / (fast ? 6 : 24)) % 2];
+
+    // 畫面震動
+    if (shake > 0) {
+      shake--;
+      world.position.set(Math.round(Math.random() * 4 - 2), Math.round(Math.random() * 4 - 2));
+    } else world.position.set(0, 0);
+
+    // HUD
+    const human = G.screen !== 'title' && G.human >= 0;
+    teamLabel[0].setText(human ? '1P' : 'RED');
+    teamLabel[1].setText(human ? 'CPU' : 'BLUE');
+    teamLabel[1].position.set(W - 4 - teamLabel[1].textWidth, 2);
+    scoreText[0].setText(String(G.score[0]).padStart(2, '0'));
+    scoreText[1].setText(String(G.score[1]).padStart(2, '0'));
+    scoreText[0].x = teamLabel[0].x + teamLabel[0].textWidth + 5;
+    scoreText[1].x = teamLabel[1].x - 5 - scoreText[1].textWidth * 2;
+    for (const t of [0, 1]) pips[t].forEach((p, i) => { p.tint = teams[t][i].alive ? TEAM_COL[t] : 0x404040; });
+    const live = G.mode === 'raid' || G.mode === 'held';
+    timerBg.visible = timerBar.visible = live || G.mode === 'ready';
+    const k = clamp(G.timer / RAID_T, 0, 1);
+    timerBar.width = Math.round(100 * k);
+    timerBar.tint = k > 0.5 ? 0x58d854 : k > 0.3 ? 0xf8b800 : 0xd82800;
+    let ct = '';
+    if (G.mode === 'held') ct = frame % 20 < 12 ? 'STRUGGLE!' : '';
+    else if (live || G.mode === 'ready') ct = `${tname(G.raidTeam)} RAID  TOUCH ${G.touched.length}${G.bonus ? ' +B' : ''}`;
+    centerText.setText(ct, G.mode === 'held' ? 0xf8b800 : 0xbcbcbc);
+    centerText.x = Math.round((W - centerText.textWidth) / 2);
+
+    // 橫幅
+    const b = banners[0];
+    if (b) {
+      bannerMain.setText(b.main, b.color);
+      bannerSub.setText(b.sub, 0xfcfcfc);
+      bannerMain.x = Math.round((W - bannerMain.textWidth * 2) / 2);
+      bannerSub.x = Math.round((W - bannerSub.textWidth) / 2);
+      if (--b.t <= 0) banners.shift();
+    }
+    bannerBg.visible = bannerMain.visible = bannerSub.visible = !!b && G.screen === 'play';
+    bannerBg.height = b && b.sub ? 30 : 22;
+
+    overlay.visible = G.screen !== 'play';
+    if (pressText) pressText.visible = frame % 60 < 40;
+
+    updatePanel();
+  }
+
+  startDemo();
+
+  let acc = 0;
+  const STEP_MS = 1000 / 60;
+  app.ticker.add(t => {
+    acc += Math.min(t.deltaMS, 100);
+    while (acc >= STEP_MS) { step(); acc -= STEP_MS; }
+  });
+})();
+</script>
+</body>
+</html>
