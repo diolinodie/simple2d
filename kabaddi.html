@@ -541,24 +541,33 @@
   panelBg.y = PANEL_Y;
   panel.addChild(panelBg);
 
-  const DPAD = { x: 4, y: PANEL_Y + 3, w: 32, h: 30, cx: 20, cy: PANEL_Y + 18 };
-  const dpad = new PIXI.Sprite(drawTex(32, 30, (px, ctx) => {
-    const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
-    rect(11, 0, 10, 30, '#000000'); rect(0, 10, 32, 10, '#000000');
-    rect(12, 1, 8, 28, '#585858'); rect(1, 11, 30, 8, '#585858');
-    rect(12, 1, 8, 1, '#888888'); rect(1, 11, 30, 1, '#888888');
-    ctx.fillStyle = '#bcbcbc';
-    for (let i = 0; i < 3; i++) {
-      rect(16 - i, 3 + i, 1 + i * 2, 1, '#bcbcbc');          // 上
-      rect(16 - i, 26 - i, 1 + i * 2, 1, '#bcbcbc');         // 下
-      rect(3 + i, 15 - i, 1, 1 + i * 2, '#bcbcbc');          // 左
-      rect(28 - i, 15 - i, 1, 1 + i * 2, '#bcbcbc');         // 右
-    }
-  }));
-  dpad.position.set(DPAD.x, DPAD.y);
-  const dpadDot = new PIXI.Sprite(PIXI.Texture.WHITE);
-  dpadDot.width = 4; dpadDot.height = 4; dpadDot.tint = 0xf8b800; dpadDot.anchor.set(0.5);
-  panel.addChild(dpad, dpadDot);
+  // 浮動類比搖桿：按住畫面左半邊任意處即以該點為中心出現
+  const JOY = { R: 24, KNOB: 9, DEAD: 0.18, ZONE_X: W / 2 };
+  function circleTex(r, fill, edge, hi) {
+    const s = r * 2 + 1;
+    return drawTex(s, s, (px) => {
+      for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) {
+        const d = Math.hypot(x - r, y - r);
+        if (d > r + 0.5) continue;
+        if (d > r - 1.5) px(x, y, edge);
+        else if (fill) px(x, y, hi && x + y < r * 1.2 && d > r - 3.5 ? hi : fill);
+      }
+    });
+  }
+  const joyBase = new PIXI.Sprite(circleTex(JOY.R, '#000000', '#bcbcbc'));
+  joyBase.anchor.set(0.5); joyBase.alpha = 0.45;
+  const joyKnob = new PIXI.Sprite(circleTex(JOY.KNOB, '#f8b800', '#000000', '#fce0a8'));
+  joyKnob.anchor.set(0.5);
+  // 面板左側的小提示圖示（閒置時顯示）
+  const joyHint = new PIXI.Container();
+  const hintBase = new PIXI.Sprite(circleTex(14, '#282828', '#585858'));
+  const hintKnob = new PIXI.Sprite(circleTex(6, '#585858', '#000000', '#888888'));
+  hintBase.anchor.set(0.5); hintKnob.anchor.set(0.5);
+  joyHint.addChild(hintBase, hintKnob);
+  joyHint.position.set(20, PANEL_Y + 18);
+  joyBase.visible = joyKnob.visible = false;
+  panel.addChild(joyHint, joyBase, joyKnob);
+  let joy = null; // { id, ox, oy, x, y }
 
   function buttonTex(base, light, dark) {
     return drawTex(66, 32, (px, ctx) => {
@@ -680,11 +689,28 @@
     sfx.init();
     if (G.screen !== 'play') { pressAct(-1); return; }
     const bi = buttons.findIndex(b => p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h);
-    if (bi >= 0) pressAct(bi);
-    else if (p.y < PANEL_Y) pressAct(-1); // 點球場也可以連打掙扎
+    if (bi >= 0) { pressAct(bi); return; }
+    if (p.x < JOY.ZONE_X && !joy) {
+      const m = JOY.R + 2;
+      joy = { id: e.pointerId, ox: clamp(p.x, m, W - m), oy: clamp(p.y, m, H - m), x: p.x, y: p.y };
+    }
+    if (p.y < PANEL_Y) pressAct(-1); // 點球場也可以連打掙扎
   });
-  app.canvas.addEventListener('pointermove', e => { if (pointers.has(e.pointerId)) pointers.set(e.pointerId, toVirtual(e)); });
-  const pointerEnd = e => pointers.delete(e.pointerId);
+  app.canvas.addEventListener('pointermove', e => {
+    if (!pointers.has(e.pointerId)) return;
+    const p = toVirtual(e);
+    pointers.set(e.pointerId, p);
+    if (joy && joy.id === e.pointerId) {
+      joy.x = p.x; joy.y = p.y;
+      // 手指拉太遠時底座跟著走，免得要縮回來才能轉向
+      const ox = p.x - joy.ox, oy = p.y - joy.oy, d = Math.hypot(ox, oy), max = JOY.R * 1.4;
+      if (d > max) { joy.ox += ox / d * (d - max); joy.oy += oy / d * (d - max); }
+    }
+  });
+  const pointerEnd = e => {
+    pointers.delete(e.pointerId);
+    if (joy && joy.id === e.pointerId) joy = null;
+  };
   app.canvas.addEventListener('pointerup', pointerEnd);
   app.canvas.addEventListener('pointercancel', pointerEnd);
 
@@ -694,15 +720,21 @@
     if (keys.has('ArrowRight') || keys.has('KeyD')) dx += 1;
     if (keys.has('ArrowUp') || keys.has('KeyW')) dz -= 1;
     if (keys.has('ArrowDown') || keys.has('KeyS')) dz += 1;
-    for (const p of pointers.values()) {
-      if (p.x < DPAD.x + DPAD.w + 4 && p.y >= PANEL_Y) {
-        const ox = p.x - DPAD.cx, oz = p.y - DPAD.cy;
-        if (Math.abs(ox) > 4) dx = Math.sign(ox);
-        if (Math.abs(oz) > 4) dz = Math.sign(oz);
-      }
+    if (joy && G.screen === 'play') {
+      const ox = joy.x - joy.ox, oy = joy.y - joy.oy, d = Math.hypot(ox, oy);
+      const m = clamp((d / JOY.R - JOY.DEAD) / (0.8 - JOY.DEAD), 0, 1); // 推到 80% 就是全速
+      dx = m ? ox / d * m : 0; dz = m ? oy / d * m : 0;
+      const kd = Math.min(d, JOY.R);
+      joyBase.position.set(joy.ox, joy.oy);
+      joyKnob.position.set(joy.ox + (d ? ox / d * kd : 0), joy.oy + (d ? oy / d * kd : 0));
+      joyBase.visible = joyKnob.visible = true;
+      joyHint.visible = false;
+    } else {
+      if (joy && G.screen !== 'play') joy = null;
+      joyBase.visible = joyKnob.visible = false;
+      joyHint.visible = true;
+      hintKnob.position.set(Math.sign(dx) * 6, Math.sign(dz) * 6);
     }
-    dpadDot.position.set(DPAD.cx + dx * 10, DPAD.cy + dz * 9);
-    dpadDot.visible = !!(dx || dz);
     return { dx, dz, acts: actQueue.splice(0) };
   }
 
@@ -1110,10 +1142,10 @@
       return;
     }
     if (inp.dx || inp.dz) {
-      const k = inp.dx && inp.dz ? 0.75 : 1;
+      const k = Math.min(1, 1.06 / Math.hypot(inp.dx, inp.dz)); // 鍵盤斜走約 0.75，搖桿已是單位圓內
       moveBy(e, inp.dx * (isAtk ? 1.25 : 1.1) * k, inp.dz * 0.85 * k);
       e.moving = true;
-      if (isAtk && inp.dx) e.face = inp.dx;
+      if (isAtk && Math.abs(inp.dx) > 0.2) e.face = Math.sign(inp.dx);
     }
     if (!isAtk) e.face = Math.sign(G.raider.x - e.x) || e.face;
   }
