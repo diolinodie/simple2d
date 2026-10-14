@@ -604,10 +604,33 @@
     panel.addChild(c);
     buttons.push({ c, bg, name, b1, b2, x: c.x, y: c.y, w: 66, h: 32, flash: 0 });
   }
+  // 防守時的換人鈕（Q / TAB / SHIFT），放在面板右上方的球場邊
+  const swapTex = (base, light, dark) => drawTex(40, 14, (px, ctx) => {
+    const rect = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+    rect(0, 0, 40, 14, '#000000');
+    rect(1, 1, 38, 12, dark);
+    rect(1, 1, 37, 11, light);
+    rect(2, 2, 36, 10, base);
+  });
+  const SWAP_TEX = [swapTex('#00a800', '#58d854', '#005800'), swapTex('#58d854', '#b8f8b8', '#00a800')];
+  const swapC = new PIXI.Container();
+  const swapBg = new PIXI.Sprite(SWAP_TEX[0]);
+  const swapLabel = new PixelText('Q SWAP', 0xfcfcfc);
+  swapLabel.position.set(8, 4);
+  swapC.addChild(swapBg, swapLabel);
+  swapC.position.set(W - 44, PANEL_Y - 17);
+  swapC.visible = false;
+  panel.addChild(swapC);
+  const swapBtn = { x: swapC.x, y: swapC.y, w: 40, h: 14, flash: 0, get visible() { return swapC.visible; } };
+
   let panelRole = null;
   function updatePanel() {
     let role = 'off';
     if (G.screen === 'play' && G.raider) role = G.raidTeam === G.human ? 'atk' : 'def';
+    swapC.visible = role === 'def' && G.mode === 'raid';
+    swapBg.texture = SWAP_TEX[swapBtn.flash > 0 ? 1 : 0];
+    swapLabel.y = 4 +(swapBtn.flash > 0 ? 1 : 0);
+    if (swapBtn.flash > 0) swapBtn.flash--;
     buttons.forEach(b => {
       b.bg.texture = BTN_TEX[role][b.flash > 0 ? 1 : 0];
       const off = b.flash > 0 ? 1 : 0;
@@ -684,6 +707,12 @@
     actQueue.push(i);
     if (i >= 0) buttons[i].flash = 8;
   }
+  let swapReq = false;
+  function pressSwap() {
+    if (!swapBtn.visible) return;
+    swapReq = true;
+    swapBtn.flash = 8;
+  }
   addEventListener('keydown', e => {
     if (e.code in KEY_ACT) { e.preventDefault(); if (!e.repeat) pressAct(KEY_ACT[e.code]); }
     else if (MOVE_KEYS.includes(e.code)) { e.preventDefault(); keys.add(e.code); }
@@ -692,6 +721,9 @@
     else if (e.code === 'KeyM') sfx.muted = !sfx.muted;
     else if (e.code === 'KeyG') crt.hidden = !crt.hidden;
     else if (e.code === 'KeyF') toggleFx();
+    else if (e.code === 'KeyQ' || e.code === 'Tab' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+      e.preventDefault(); if (!e.repeat) pressSwap();
+    }
   });
   addEventListener('keyup', e => keys.delete(e.code));
   addEventListener('blur', () => keys.clear());
@@ -709,6 +741,7 @@
     if (p.y < 13) { toggleFx(); return; } // 最上方黑條：特效開關
     const bi = buttons.findIndex(b => p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h);
     if (bi >= 0) { pressAct(bi); return; }
+    if (swapBtn.visible && p.x >= swapBtn.x && p.x < swapBtn.x + swapBtn.w && p.y >= swapBtn.y && p.y < swapBtn.y + swapBtn.h) { pressSwap(); return; }
     if (p.x < JOY.ZONE_X && !joy) {
       const m = JOY.R + 2;
       joy = { id: e.pointerId, ox: clamp(p.x, m, W - m), oy: clamp(p.y, m, H - m), x: p.x, y: p.y };
@@ -754,7 +787,9 @@
       joyHint.visible = true;
       hintKnob.position.set(Math.sign(dx) * 6, Math.sign(dz) * 6);
     }
-    return { dx, dz, acts: actQueue.splice(0) };
+    const swap = swapReq;
+    swapReq = false;
+    return { dx, dz, acts: actQueue.splice(0), swap };
   }
 
   // ------------------------------------------------------------------
@@ -1225,13 +1260,15 @@
     G.timer--;
     if (G.timer % 10 === 0) sfx.chant(G.timer / 10);
 
-    // 防守方由誰操作
+    // 防守方由誰操作：不自動換人（免得誤操作出界），只在沒人可控或按切換時換
     if (G.human === dt) {
       const c = G.ctrl;
-      if (!c || !c.alive || (!c.act && !c.stun)) {
-        let n = null, nd = 1e9;
-        for (const d of defs) { const dd = dist(d, r); if (!d.stun && dd < nd) { nd = dd; n = d; } }
-        if (n && (!c || !c.alive || c.stun || nd + 8 < dist(c, r))) G.ctrl = n;
+      const order = defs.slice().sort((a, b) => dist(a, r) - dist(b, r));
+      if (!c || !c.alive) G.ctrl = order.find(d => !d.stun) || order[0] || null;
+      else if (inp.swap && order.length > 1) {
+        // 換到離攻擊手最近的人；已經是最近的就換第二近的
+        G.ctrl = c === order[0] ? order[1] : order[0];
+        G.buf = null;
       }
     } else G.ctrl = null;
 
@@ -1291,6 +1328,19 @@
       h.z = clamp(r.z + (i === 1 ? -6 : i === 2 ? 6 : 0), 1, DEPTH - 1);
       h.face = own;
     });
+    // 其他守方隊員圍過來；貼到身邊且人數未滿就加入壓制
+    const others = alive(dt).filter(d => !held.holders.includes(d));
+    others.forEach(d => {
+      d.moving = false;
+      if (d.act) { d.act = null; d.y = 0; }
+      if (d.stun > 0) { d.stun--; return; }
+      const tx = clamp(r.x + so * 12, -HALF + 4, HALF - 4), tz = clamp(r.z, 2, DEPTH - 2);
+      const dx = tx - d.x, dz = tz - d.z, dd = Math.hypot(dx, dz);
+      if (dd > 3) { moveBy(d, dx / dd * 1.0, dz / dd * 0.8); d.moving = true; }
+      d.face = Math.sign(r.x - d.x) || d.face;
+      if (held.holders.length < 3 && dist(d, r) < 16) { d.act = null; held.holders.push(d); sfx.tackle(); }
+    });
+    separate(others);
     if (r.x * so <= 0) {
       // 拖著防守者摸到中線：抓人的也出局
       held.holders.forEach(h => { if (!h.touched) { h.touched = true; G.touched.push(h); } });
