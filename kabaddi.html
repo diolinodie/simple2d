@@ -26,9 +26,10 @@
 <body>
 <div id="wrap"><div id="crt"></div></div>
 <div id="help">
-  方向鍵 / WASD 移動　<b>Z X C V</b>（或 J K L ;）出招　被抓住時<b>連打</b>動作鍵掙扎回中線　M 靜音　G 掃描線　Esc 回標題<br>
+  方向鍵 / WASD 移動　<b>Z X C V</b>（或 J K L ;）出招　被抓住時<b>連打</b>動作鍵掙扎回中線　M 靜音　G 掃描線　F 慢動作特寫（手機點最上方黑條）　Esc 回標題<br>
   <span class="a">攻：TOUCH 手觸 · KICK 腳踢 · JUMP 飛躍 · DUCK 潛身</span>
-  <span class="d">守：ANKLE 抓踝 · WAIST 抱腰 · ARM 鎖臂 · CHAIN 人鏈</span>　每招剋兩招、被兩招剋
+  <span class="d">守：ANKLE 抓踝 · WAIST 抱腰 · ARM 鎖臂 · CHAIN 人鏈</span>　每招剋兩招、被兩招剋<br>
+  踩出界即出局（接觸前，上下兩側深色 lobby 區也算界外）
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@8.6.6/dist/pixi.min.js"></script>
@@ -39,7 +40,7 @@
   // ------------------------------------------------------------------
   const W = 320, H = 180, PANEL_Y = 144;
   // 熱血躲避球式的斜俯視球場：z 為縱深（0 = 遠端），越近越寬
-  const CT = 74, DEPTH = 62, HALF = 140, BAULK = 78, BONUS = 100;
+  const CT = 74, DEPTH = 62, HALF = 140, BAULK = 78, BONUS = 100, LOBBY = 6, OUT_M = 6;
   const N = 5, WIN_SCORE = 12, RAID_T = 600;
   const scaleZ = z => 0.8 + 0.2 * z / DEPTH;
   const SX = (x, z) => 160 + x * scaleZ(z);
@@ -424,14 +425,14 @@
   // 遊戲狀態
   // ------------------------------------------------------------------
   const side = t => t === 0 ? -1 : 1;   // 紅隊在左、藍隊在右
-  const HOME = [[46, 5], [68, 17], [78, 31], [68, 45], [46, 57]]; // [距中線, z]
+  const HOME = [[46, 10], [68, 20], [78, 31], [68, 42], [46, 52]]; // [距中線, z]
   const TEAM_COL = [0xf85838, 0x3cbcfc];
 
   const G = {
     screen: 'title', mode: 'ready', t: 0, human: -1,
     score: [0, 0], raidTeam: 0, raider: null, touched: [], crossed: false, baulk: false, bonus: false,
     timer: 0, held: null, ctrl: null, rot: [0, 0], outSeq: 0, ai: null, cheerTeam: -1, result: '',
-    buf: null, winner: -1, excite: 0,
+    buf: null, winner: -1, excite: 0, struggle: false, extraR: 0, empty: [0, 0], doOrDie: false,
   };
   window.KB = G; // 方便除錯
 
@@ -482,7 +483,9 @@
   timerBar.position.set(110, 2); timerBar.height = 4;
   const centerText = new PixelText('');
   centerText.y = 7;
-  hud.addChild(topBar, ...teamLabel, ...scoreText, ...pips[0], ...pips[1], timerBg, timerBar, centerText);
+  const fxText = new PixelText('');
+  fxText.position.set(214, 1);
+  hud.addChild(topBar, ...teamLabel, ...scoreText, ...pips[0], ...pips[1], timerBg, timerBar, centerText, fxText);
 
   const bannerBg = new PIXI.Sprite(PIXI.Texture.WHITE);
   bannerBg.tint = 0x000000; bannerBg.alpha = 0.6; bannerBg.width = W; bannerBg.height = 30; bannerBg.y = 20;
@@ -628,6 +631,20 @@
   // ------------------------------------------------------------------
   const particles = [], floats = [];
   let shake = 0, frame = 0;
+  const CAM_ZOOM = 1.6, CLASH_ZOOM = 2.6, SLOW = 0.25;
+  // 特寫慢動作：雙方同時出招時觸發（t 以遊戲格數倒數，scale 為時間流速）
+  const FX = { on: true, t: 0, d: null, scale: 1 };
+  try { FX.on = localStorage.getItem('kabaddi.fx') !== '0'; } catch (e) {}
+  // 交手有結果時（COUNTER / EVADE / 被抓住）觸發特寫
+  function clashFx(d) {
+    if (FX.on && G.screen === 'play') { FX.t = 45; FX.d = d; }
+  }
+  function toggleFx() {
+    FX.on = !FX.on;
+    if (!FX.on) FX.t = 0;
+    try { localStorage.setItem('kabaddi.fx', FX.on ? '1' : '0'); } catch (e) {}
+  }
+  const cam = { z: 1, x: 0, y: 0 }; // 世界座標中可視區左上角
 
   function particle(x, y, vx, vy, color, life, g = 0.15) {
     const s = new PIXI.Sprite(PIXI.Texture.WHITE);
@@ -674,6 +691,7 @@
     else if (e.code === 'Escape') startDemo();
     else if (e.code === 'KeyM') sfx.muted = !sfx.muted;
     else if (e.code === 'KeyG') crt.hidden = !crt.hidden;
+    else if (e.code === 'KeyF') toggleFx();
   });
   addEventListener('keyup', e => keys.delete(e.code));
   addEventListener('blur', () => keys.clear());
@@ -688,6 +706,7 @@
     pointers.set(e.pointerId, p);
     sfx.init();
     if (G.screen !== 'play') { pressAct(-1); return; }
+    if (p.y < 13) { toggleFx(); return; } // 最上方黑條：特效開關
     const bi = buttons.findIndex(b => p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h);
     if (bi >= 0) { pressAct(bi); return; }
     if (p.x < JOY.ZONE_X && !joy) {
@@ -745,6 +764,7 @@
     G.human = human;
     G.score = [0, 0];
     G.rot = [0, 0];
+    G.empty = [0, 0];
     G.raidTeam = Math.random() < 0.5 || human >= 0 ? 0 : 1;
     everyone.forEach(e => { e.alive = true; e.justOut = false; });
     banners.length = 0;
@@ -781,7 +801,8 @@
     layoutBench();
     r.x = side(rt) * 10; r.z = 31; r.face = side(dt);
     G.raider = r;
-    G.touched = []; G.crossed = false; G.baulk = false; G.bonus = false;
+    G.touched = []; G.crossed = false; G.baulk = false; G.bonus = false; G.struggle = false; G.extraR = 0;
+    G.doOrDie = G.empty[rt] >= 2;
     G.timer = RAID_T; G.held = null; G.ctrl = null; G.buf = null; G.cheerTeam = -1;
     G.ai = {
       mode: 'enter', greed: 1 + (Math.random() < 0.35 ? 1 : 0), plan: pick(ATK_ACTS), tgt: null, retarget: 0,
@@ -791,7 +812,8 @@
     G.mode = 'ready';
     G.t = G.screen === 'title' ? 50 : 75;
     const col = TEAM_COL[rt];
-    if (G.human < 0) banner(`${rt === 0 ? 'RED' : 'BLUE'} RAID`, '', col, G.t);
+    if (G.doOrDie) banner('DO OR DIE!', rt === G.human ? 'SCORE OR YOU ARE OUT' : `${tname(rt)} MUST SCORE`, col, G.t);
+    else if (G.human < 0) banner(`${rt === 0 ? 'RED' : 'BLUE'} RAID`, '', col, G.t);
     else if (rt === G.human) banner('YOUR RAID!', 'TOUCH THEN RETURN TO MIDLINE', col, G.t);
     else banner('DEFEND!', 'CATCH THE RAIDER', col, G.t);
   }
@@ -804,17 +826,20 @@
 
   function endRaid(kind) {
     const rt = G.raidTeam, dt = 1 - rt, r = G.raider;
-    let ptsR = 0, ptsD = 0;
+    let ptsR = 0, ptsD = 0, outR = G.extraR, outD = 0; // out*：淘汰對方的人數（決定復活人數）
+    // 沒碰到任何防守者又沒踩過 Baulk 線就回來：攻擊手出局（防守者自己出界的分照給）
+    if (kind === 'success' && !G.struggle && !G.baulk) kind = 'baulk';
     if (kind === 'success') {
       const hit = G.touched.filter(d => d.alive);
-      ptsR = hit.length + (G.bonus ? 1 : 0);
+      ptsR = hit.length + (G.bonus ? 1 : 0) + G.extraR;
       if (ptsR > 0) {
         hit.forEach(killOut);
-        const sub = [hit.length ? `TOUCH ${hit.length}` : '', G.bonus ? 'BONUS 1' : ''].filter(Boolean).join('  ');
+        outR += hit.length;
+        const sub = [hit.length ? `TOUCH ${hit.length}` : '', G.extraR ? `OUT ${G.extraR}` : '', G.bonus ? 'BONUS 1' : ''].filter(Boolean).join('  ');
         banner(`+${ptsR} ${tname(rt)}`, sub, TEAM_COL[rt], 90);
         G.cheerTeam = rt;
         sfx.point(); sfx.cheer();
-      } else if (!G.baulk) kind = 'baulk';
+      } else if (G.doOrDie) kind = 'doordie';
       else { banner('EMPTY RAID', 'NO POINTS', 0xbcbcbc, 80); }
     }
     if (kind === 'baulk') {
@@ -822,18 +847,31 @@
       banner('BAULK LINE!', `RAIDER OUT  +1 ${tname(dt)}`, TEAM_COL[dt], 90);
       G.cheerTeam = dt; sfx.bad();
     } else if (kind === 'tackled') {
-      const sup = alive(dt).length <= 3;
+      const sup = alive(dt).length <= 2;
       killOut(r); ptsD = sup ? 2 : 1;
       banner(sup ? 'SUPER TACKLE!' : 'TACKLE!', `+${ptsD} ${tname(dt)}`, TEAM_COL[dt], 90);
       G.cheerTeam = dt; sfx.cheer();
+    } else if (kind === 'lineout') {
+      killOut(r); ptsD = 1;
+      banner('OUT OF BOUNDS', `RAIDER OUT  +1 ${tname(dt)}`, TEAM_COL[dt], 90);
+      G.cheerTeam = dt; sfx.bad();
     } else if (kind === 'timeout') {
       killOut(r); ptsD = 1;
       banner('OUT OF BREATH', `RAIDER OUT  +1 ${tname(dt)}`, TEAM_COL[dt], 90);
       G.cheerTeam = dt; sfx.bad();
+    } else if (kind === 'doordie') {
+      killOut(r); ptsD = 1;
+      banner('DO OR DIE FAILED', `RAIDER OUT  +1 ${tname(dt)}`, TEAM_COL[dt], 90);
+      G.cheerTeam = dt; sfx.bad();
     }
+    if (kind !== 'success') outD = 1; // 其餘結果都是攻擊手出局
     G.result = kind;
+    if (kind !== 'success') ptsR += G.extraR; // 防守者踩出界的分照算
     G.score[rt] += ptsR; G.score[dt] += ptsD;
-    revive(rt, ptsR); revive(dt, ptsD);
+    // 淘汰幾人才復活幾人：Bonus、Super Tackle 多的分、All Out 都不算
+    revive(rt, outR); revive(dt, outD);
+    // 連續空手進攻計數（任一方得分就歸零）
+    G.empty[rt] = ptsR + ptsD > 0 ? 0 : G.empty[rt] + 1;
     G.t = 120;
     for (const t of [0, 1]) {
       if (alive(t).length === 0) {
@@ -859,15 +897,25 @@
   }
   const committed = e => { const p = phaseOf(e); return p === 'start' || p === 'active'; };
 
+  // 可以走出界一小段（踩出去就出局），但不會走進觀眾席
   function moveBy(e, dx, dz) {
-    e.x = clamp(e.x + dx, -HALF + 2, HALF - 2);
-    e.z = clamp(e.z + dz, 1, DEPTH - 1);
+    e.x = clamp(e.x + dx, -HALF - OUT_M, HALF + OUT_M);
+    e.z = clamp(e.z + dz, -OUT_M, DEPTH + OUT_M);
     if (e !== G.raider) {
       const s = side(e.team);
       if (e.x * s < 4) e.x = s * 4; // 防守方不能越過中線
     }
   }
+  // 出界判定：底線、邊線之外；尚未發生接觸前，兩側 lobby 也算界外
+  function isOutOfBounds(e) {
+    if (e.y > 1) return false; // 跳在空中不算
+    if (Math.abs(e.x) > HALF || e.z < 0 || e.z > DEPTH) return true;
+    return !G.struggle && (e.z < LOBBY || e.z > DEPTH - LOBBY);
+  }
+  // AI 用的安全範圍
+  const safeZ = z => G.struggle ? clamp(z, 3, DEPTH - 3) : clamp(z, LOBBY + 3, DEPTH - LOBBY - 3);
   function steer(e, tx, tz, spd) {
+    tx = clamp(tx, -HALF + 6, HALF - 6); tz = safeZ(tz);
     const dx = tx - e.x, dz = tz - e.z, d = Math.hypot(dx, dz);
     if (d < 1.2) return false;
     const k = Math.min(spd, d) / d;
@@ -930,6 +978,8 @@
     r.act = null; r.y = 0;
     G.held = { t: 100, holders };
     G.mode = 'held';
+    clashFx(d);
+    G.struggle = true;
     shake = 8;
     sfx.tackle();
     if (counter) banner('COUNTER!', `${d.act0} > ${counter}`, TEAM_COL[dt], 50);
@@ -942,7 +992,7 @@
     if (r.x * so < -1) return; // 攻擊手還在自己半場：不能抓也不能摸
     const rp = phaseOf(r);
     for (const d of alive(dt)) {
-      if (d.stun) continue;
+      // 暈眩中的防守者沒有招式（不能抓人），但仍然可以被摸
       const dd = dist(r, d), dp = phaseOf(d);
       // 防守判定中
       if (dp === 'active' && dd <= ACT[d.act].reach) {
@@ -950,6 +1000,7 @@
           floatText('EVADE', r, 0xa4e4fc);
           floatText(`${r.act}>${d.act}`, r, 0xfcfcfc, 8);
           sfx.evade();
+          clashFx(d);
           d.act = null; d.stun = 28;
           continue;
         }
@@ -966,10 +1017,12 @@
         }
         if (committed(d)) {
           floatText(`${r.act}>${d.act}`, d, 0xfcfcfc, 8);
+          clashFx(d);
           d.act = null; d.stun = 30;
         }
         d.touched = true;
         G.touched.push(d);
+        G.struggle = true;
         floatText('TOUCH', d, 0xf8b800);
         burst(SX(d.x, d.z), SY(d.z) - 16, [0xf8b800, 0xfcfcfc], 10, 1.8);
         sfx.touch();
@@ -1022,7 +1075,7 @@
     }
 
     const untouched = defs.filter(d => !d.touched);
-    if (ai.mode !== 'escape' && (G.touched.length >= ai.greed || G.timer < RAID_T * 0.35 || !untouched.length ||
+    if (ai.mode !== 'escape' && (G.touched.length >= ai.greed || G.timer < RAID_T * (G.doOrDie && !G.touched.length ? 0.15 : 0.35) || !untouched.length ||
         (ai.tryBonus && G.bonus && depth > BONUS))) ai.mode = 'escape';
 
     if (ai.mode === 'enter') {
@@ -1033,6 +1086,17 @@
     }
 
     if (ai.mode === 'hunt') {
+      // 有人被閃過正在暈眩：衝上去補摸
+      const dazed = nearestDef(r, d => !d.touched && d.stun > 6 && dist(r, d) < 40);
+      if (dazed) {
+        ai.tgt = dazed; ai.retarget = 90;
+        const dd = dist(r, dazed);
+        const opt = ['TOUCH', 'KICK'].find(a => ACT[a].reach + lungeDist(a) * 0.8 >= dd);
+        if (opt && Math.random() < ai.react * 0.3) { startAct(r, opt, dazed.x - r.x, dazed.z - r.z); return; }
+        steer(r, dazed.x, dazed.z, 1.2);
+        r.face = Math.sign(dazed.x - r.x) || r.face;
+        return;
+      }
       if (!ai.tgt || !ai.tgt.alive || ai.tgt.touched || --ai.retarget <= 0) {
         ai.tgt = nearestDef(r, d => !d.touched);
         ai.retarget = 90;
@@ -1060,7 +1124,7 @@
       const dd = dist(r, d);
       if (dd < 34) tz += Math.sign(r.z - d.z || (r.z < 31 ? -1 : 1)) * (34 - dd) * 0.5;
     }
-    steer(r, own * 12, clamp(tz, 4, DEPTH - 4), 1.2);
+    steer(r, own * 12, tz, 1.2);
     r.face = so;
     const blocker = defs.find(d => (d.x - r.x) * own > 0 && dist(r, d) < 20);
     if (blocker && Math.random() < 0.04) startAct(r, pick(['JUMP', 'DUCK']), own, 0);
@@ -1102,7 +1166,7 @@
     if (corner && depth > 50) {
       // 邊角包抄，截斷退路
       tx = s * Math.max(8, depth - 24);
-      tz = d.slot === 0 ? Math.max(3, r.z - 14) : Math.min(DEPTH - 3, r.z + 14);
+      tz = d.slot === 0 ? r.z - 14 : r.z + 14; // steer 會夾在安全範圍內
     }
     if (dd < 17) {
       const k = 17 / (dd || 1);
@@ -1185,6 +1249,18 @@
     resolve();
     if (G.mode !== 'raid') return;
 
+    // 出界：防守者當場出局、攻方 +1；攻擊手出界則本次進攻失敗
+    for (const d of defs) {
+      if (!d.alive || !isOutOfBounds(d)) continue;
+      floatText('OUT!', d, 0xf8b800);
+      killOut(d); d.justOut = false;
+      G.extraR++;
+      if (G.ctrl === d) G.ctrl = null;
+      layoutBench();
+      G.excite = 40; sfx.bad();
+    }
+    if (isOutOfBounds(r)) { endRaid('lineout'); return; }
+
     const depth = r.x * so;
     if (depth > 2) G.crossed = true;
     if (depth >= BAULK && !G.baulk) G.baulk = true;
@@ -1211,7 +1287,7 @@
     r.face = own;
     if (frame % 4 === 0) r.z += Math.random() < 0.5 ? -0.5 : 0.5;
     held.holders.forEach((h, i) => {
-      h.x = r.x + so * (7 + (i >> 1) * 4);
+      h.x = clamp(r.x + so * (7 + (i >> 1) * 4), -HALF - OUT_M, HALF + OUT_M);
       h.z = clamp(r.z + (i === 1 ? -6 : i === 2 ? 6 : 0), 1, DEPTH - 1);
       h.face = own;
     });
@@ -1230,6 +1306,7 @@
       if (--G.t <= 0) { G.mode = 'raid'; sfx.whistle(); }
     } else if (G.mode === 'raid') stepRaid(inp);
     else if (G.mode === 'held') stepHeld(inp);
+    if (FX.t > 0) FX.t--;
     else if (G.mode === 'result') {
       everyone.forEach(e => { e.act = null; e.y = 0; });
       if (--G.t <= 0) {
@@ -1268,7 +1345,7 @@
   // ------------------------------------------------------------------
   function poseOf(e) {
     if (!e.alive) return G.mode === 'result' && e.justOut ? 'down' : 'sit';
-    if (e.z < 0) return 'sit';
+    if (e.z < -6) return 'sit';
     if (G.mode === 'held') {
       if (e === G.raider) return 'caught';
       if (G.held.holders.includes(e)) return 'grab';
@@ -1310,7 +1387,7 @@
       spr.scale.x = e.face < 0 ? -1 : 1;
       spr.zIndex = e.z * 10 + (e === r ? 5 : 0);
       e.shadow.position.set(sx, sy);
-      e.shadow.visible = e.alive || e.z < 0 || e.justOut;
+      e.shadow.visible = e.alive || e.z < -6 || e.justOut;
       spr.visible = true;
 
       // 頭上標籤
@@ -1335,11 +1412,8 @@
     if (G.excite > 0) G.excite--;
     crowd.texture = crowdTex[Math.floor(frame / (fast ? 6 : 24)) % 2];
 
-    // 畫面震動
-    if (shake > 0) {
-      shake--;
-      world.position.set(Math.round(Math.random() * 4 - 2), Math.round(Math.random() * 4 - 2));
-    } else world.position.set(0, 0);
+    if (shake > 0) shake--;
+    fxText.setText('SLO',FX.on ? (FX.t > 0 && frame % 16 < 8 ? 0xf8b800 : 0x58d854) : 0x585858);
 
     // HUD
     const human = G.screen !== 'title' && G.human >= 0;
@@ -1358,7 +1432,7 @@
     timerBar.tint = k > 0.5 ? 0x58d854 : k > 0.3 ? 0xf8b800 : 0xd82800;
     let ct = '';
     if (G.mode === 'held') ct = frame % 20 < 12 ? 'STRUGGLE!' : '';
-    else if (live || G.mode === 'ready') ct = `${tname(G.raidTeam)} RAID  TOUCH ${G.touched.length}${G.bonus ? ' +B' : ''}`;
+    else if (live || G.mode === 'ready') ct = `${tname(G.raidTeam)} ${G.doOrDie ? 'DO-OR-DIE' : 'RAID'}  TOUCH ${G.touched.length}${G.bonus ? ' +B' : ''}`;
     centerText.setText(ct, G.mode === 'held' ? 0xf8b800 : 0xbcbcbc);
     centerText.x = Math.round((W - centerText.textWidth) / 2);
 
@@ -1380,13 +1454,48 @@
     updatePanel();
   }
 
+  // 鏡頭：攻方過中線後拉近到防守半場，攻方半場只露一小段；交手時特寫
+  function updateCamera(ms) {
+    const r = G.raider;
+    const live = G.mode === 'raid' || G.mode === 'held';
+    let tz = 1, tx = 0, ty = 0, ck = 0.08;
+    if (FX.t > 0 && r && live || FX.t > 0 && G.mode === 'result') {
+      tz = CLASH_ZOOM; ck = 0.2;
+      const vw = W / tz, vh = PANEL_Y / tz, d = FX.d && FX.d.alive ? FX.d : r;
+      const cx = (SX(r.x, r.z) + SX(d.x, d.z)) / 2, cy = (SY(r.z) + SY(d.z)) / 2 - 14;
+      tx = clamp(cx - vw / 2, 0, W - vw);
+      ty = clamp(cy - vh / 2, 0, PANEL_Y - vh);
+    } else if (live && G.crossed && r) {
+      tz = CAM_ZOOM; ck = 0.12;
+      const vw = W / tz, vh = PANEL_Y / tz, so = side(1 - G.raidTeam);
+      const edge = 160 + so * (HALF + 8);                     // 防守方底線外側
+      tx = so > 0 ? edge - vw : edge;
+      const rx = SX(r.x, r.z);                                // 攻方退回時鏡頭跟著
+      tx = clamp(tx, rx + 24 - vw, rx - 24);
+      ty = clamp(SY(r.z) - 18 - vh / 2, 0, PANEL_Y - vh);
+    }
+    const f = 1 - Math.pow(1 - ck, ms / STEP_MS);
+    cam.z += (tz - cam.z) * f;
+    cam.x += (tx - cam.x) * f;
+    cam.y += (ty - cam.y) * f;
+    let jx = 0, jy = 0;
+    if (shake > 0) { jx = Math.random() * 4 - 2; jy = Math.random() * 4 - 2; }
+    world.scale.set(cam.z);
+    world.position.set(Math.round(-cam.x * cam.z + jx), Math.round(-cam.y * cam.z + jy));
+  }
+
   startDemo();
 
   let acc = 0;
   const STEP_MS = 1000 / 60;
   app.ticker.add(t => {
-    acc += Math.min(t.deltaMS, 100);
+    const ms = Math.min(t.deltaMS, 100);
+    // 慢動作：進入要快、恢復稍慢
+    const target = FX.t > 0 ? SLOW : 1;
+    FX.scale += (target - FX.scale) * (1 - Math.pow(target < FX.scale ? 0.75 : 0.9, ms / STEP_MS));
+    acc += ms * FX.scale;
     while (acc >= STEP_MS) { step(); acc -= STEP_MS; }
+    updateCamera(ms);
   });
 })();
 </script>
